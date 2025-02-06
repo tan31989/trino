@@ -13,9 +13,11 @@
  */
 package io.trino.filesystem.local;
 
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoOutputFile;
 import io.trino.memory.context.AggregatedMemoryContext;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
@@ -25,16 +27,21 @@ import java.nio.file.StandardOpenOption;
 import static io.trino.filesystem.local.LocalUtils.handleException;
 import static java.util.Objects.requireNonNull;
 
-class LocalOutputFile
+public class LocalOutputFile
         implements TrinoOutputFile
 {
-    private final String location;
+    private final Location location;
     private final Path path;
 
-    public LocalOutputFile(String location, Path path)
+    public LocalOutputFile(Location location, Path path)
     {
         this.location = requireNonNull(location, "location is null");
         this.path = requireNonNull(path, "path is null");
+    }
+
+    public LocalOutputFile(File file)
+    {
+        this(Location.of(file.toURI().toString()), file.toPath());
     }
 
     @Override
@@ -52,13 +59,15 @@ class LocalOutputFile
     }
 
     @Override
-    public OutputStream createOrOverwrite(AggregatedMemoryContext memoryContext)
+    public void createOrOverwrite(byte[] data)
             throws IOException
     {
         try {
             Files.createDirectories(path.getParent());
             OutputStream stream = Files.newOutputStream(path);
-            return new LocalOutputStream(location, stream);
+            try (OutputStream out = new LocalOutputStream(location, stream)) {
+                out.write(data);
+            }
         }
         catch (IOException e) {
             throw handleException(location, e);
@@ -66,8 +75,14 @@ class LocalOutputFile
     }
 
     @Override
-    public String location()
+    public Location location()
     {
         return location;
+    }
+
+    @Override
+    public String toString()
+    {
+        return location.toString();
     }
 }

@@ -16,11 +16,10 @@ package io.trino.sql.planner.optimizations;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import com.google.errorprone.annotations.Immutable;
 import io.trino.spi.connector.LocalProperty;
 import io.trino.sql.planner.Partitioning;
 import io.trino.sql.planner.Symbol;
-
-import javax.annotation.concurrent.Immutable;
 
 import java.util.List;
 import java.util.Objects;
@@ -278,7 +277,7 @@ class PreferredProperties
                 return false;
             }
             Global other = (Global) obj;
-            return Objects.equals(this.distributed, other.distributed)
+            return this.distributed == other.distributed
                     && Objects.equals(this.partitioningProperties, other.partitioningProperties);
         }
 

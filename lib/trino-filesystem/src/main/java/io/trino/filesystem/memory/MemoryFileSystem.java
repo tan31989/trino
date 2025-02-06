@@ -13,10 +13,12 @@
  */
 package io.trino.filesystem.memory;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
 import io.trino.filesystem.FileEntry;
 import io.trino.filesystem.FileIterator;
-import io.trino.filesystem.ParsedLocation;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.filesystem.TrinoOutputFile;
@@ -24,15 +26,16 @@ import io.trino.filesystem.memory.MemoryOutputFile.OutputBlob;
 
 import java.io.IOException;
 import java.nio.file.FileAlreadyExistsException;
-import java.nio.file.NoSuchFileException;
+import java.time.Instant;
 import java.util.Iterator;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static io.trino.filesystem.ParsedLocation.parseLocation;
+import static java.util.Map.Entry.comparingByKey;
 
 /**
  * A blob file system for testing.
@@ -42,27 +45,35 @@ public class MemoryFileSystem
 {
     private final ConcurrentMap<String, MemoryBlob> blobs = new ConcurrentHashMap<>();
 
-    boolean isEmpty()
+    @VisibleForTesting
+    public boolean isEmpty()
     {
         return blobs.isEmpty();
     }
 
     @Override
-    public TrinoInputFile newInputFile(String location)
+    public TrinoInputFile newInputFile(Location location)
     {
         String key = toBlobKey(location);
-        return new MemoryInputFile(location, () -> blobs.get(key), OptionalLong.empty());
+        return new MemoryInputFile(location, () -> blobs.get(key), OptionalLong.empty(), Optional.empty());
     }
 
     @Override
-    public TrinoInputFile newInputFile(String location, long length)
+    public TrinoInputFile newInputFile(Location location, long length)
     {
         String key = toBlobKey(location);
-        return new MemoryInputFile(location, () -> blobs.get(key), OptionalLong.of(length));
+        return new MemoryInputFile(location, () -> blobs.get(key), OptionalLong.of(length), Optional.empty());
     }
 
     @Override
-    public TrinoOutputFile newOutputFile(String location)
+    public TrinoInputFile newInputFile(Location location, long length, Instant lastModified)
+    {
+        String key = toBlobKey(location);
+        return new MemoryInputFile(location, () -> blobs.get(key), OptionalLong.of(length), Optional.of(lastModified));
+    }
+
+    @Override
+    public TrinoOutputFile newOutputFile(Location location)
     {
         String key = toBlobKey(location);
         OutputBlob outputBlob = new OutputBlob()
@@ -78,7 +89,7 @@ public class MemoryFileSystem
                     throws FileAlreadyExistsException
             {
                 if (blobs.putIfAbsent(key, new MemoryBlob(data)) != null) {
-                    throw new FileAlreadyExistsException(location);
+                    throw new FileAlreadyExistsException(location.toString());
                 }
             }
 
@@ -92,16 +103,14 @@ public class MemoryFileSystem
     }
 
     @Override
-    public void deleteFile(String location)
+    public void deleteFile(Location location)
             throws IOException
     {
-        if (blobs.remove(toBlobKey(location)) == null) {
-            throw new NoSuchFileException(location);
-        }
+        blobs.remove(toBlobKey(location));
     }
 
     @Override
-    public void deleteDirectory(String location)
+    public void deleteDirectory(Location location)
             throws IOException
     {
         String prefix = toBlobPrefix(location);
@@ -109,7 +118,7 @@ public class MemoryFileSystem
     }
 
     @Override
-    public void renameFile(String source, String target)
+    public void renameFile(Location source, Location target)
             throws IOException
     {
         String sourceKey = toBlobKey(source);
@@ -127,14 +136,15 @@ public class MemoryFileSystem
     }
 
     @Override
-    public FileIterator listFiles(String location)
+    public FileIterator listFiles(Location location)
             throws IOException
     {
         String prefix = toBlobPrefix(location);
         Iterator<FileEntry> iterator = blobs.entrySet().stream()
+                .sorted(comparingByKey())
                 .filter(entry -> entry.getKey().startsWith(prefix))
                 .map(entry -> new FileEntry(
-                        "memory:///" + entry.getKey(),
+                        Location.of("memory:///" + entry.getKey()),
                         entry.getValue().data().length(),
                         entry.getValue().lastModified(),
                         Optional.empty()))
@@ -155,28 +165,78 @@ public class MemoryFileSystem
         };
     }
 
-    private static String toBlobKey(String location)
+    @Override
+    public Optional<Boolean> directoryExists(Location location)
+            throws IOException
     {
-        ParsedLocation parsedLocation = parseMemoryLocation(location);
-        parsedLocation.verifyValidFileLocation();
-        return parsedLocation.path();
+        validateMemoryLocation(location);
+        if (location.path().isEmpty() || listFiles(location).hasNext()) {
+            return Optional.of(true);
+        }
+        return Optional.empty();
     }
 
-    private static String toBlobPrefix(String location)
+    @Override
+    public void createDirectory(Location location)
+            throws IOException
     {
-        String directoryPath = parseMemoryLocation(location).path();
+        validateMemoryLocation(location);
+        // memory file system does not have directories
+    }
+
+    @Override
+    public void renameDirectory(Location source, Location target)
+            throws IOException
+    {
+        throw new IOException("Memory file system does not support directory renames");
+    }
+
+    @Override
+    public Set<Location> listDirectories(Location location)
+            throws IOException
+    {
+        String prefix = toBlobPrefix(location);
+        ImmutableSet.Builder<Location> directories = ImmutableSet.builder();
+        for (String key : blobs.keySet()) {
+            if (key.startsWith(prefix)) {
+                int index = key.indexOf('/', prefix.length() + 1);
+                if (index >= 0) {
+                    directories.add(Location.of("memory:///" + key.substring(0, index + 1)));
+                }
+            }
+        }
+        return directories.build();
+    }
+
+    @Override
+    public Optional<Location> createTemporaryDirectory(Location targetPath, String temporaryPrefix, String relativePrefix)
+    {
+        validateMemoryLocation(targetPath);
+        // memory file system does not have directories
+        return Optional.empty();
+    }
+
+    private static String toBlobKey(Location location)
+    {
+        validateMemoryLocation(location);
+        location.verifyValidFileLocation();
+        return location.path();
+    }
+
+    private static String toBlobPrefix(Location location)
+    {
+        validateMemoryLocation(location);
+        String directoryPath = location.path();
         if (!directoryPath.isEmpty() && !directoryPath.endsWith("/")) {
             directoryPath += "/";
         }
         return directoryPath;
     }
 
-    private static ParsedLocation parseMemoryLocation(String location)
+    private static void validateMemoryLocation(Location location)
     {
-        ParsedLocation parsedLocation = parseLocation(location);
-        checkArgument("memory".equals(parsedLocation.scheme()), "Only 'memory' scheme is supported: %s", location);
-        checkArgument(parsedLocation.userInfo().isEmpty(), "Memory location cannot contain user info: %s", location);
-        checkArgument(parsedLocation.host().isEmpty(), "Memory location cannot contain a host: %s", location);
-        return parsedLocation;
+        checkArgument(location.scheme().equals(Optional.of("memory")), "Only 'memory' scheme is supported: %s", location);
+        checkArgument(location.userInfo().isEmpty(), "Memory location cannot contain user info: %s", location);
+        checkArgument(location.host().isEmpty(), "Memory location cannot contain a host: %s", location);
     }
 }

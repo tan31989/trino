@@ -17,8 +17,7 @@ import io.trino.array.BooleanBigArray;
 import io.trino.array.LongBigArray;
 import io.trino.spi.function.AccumulatorState;
 import io.trino.spi.function.AccumulatorStateFactory;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import static io.airlift.slice.SizeOf.SIZE_OF_BYTE;
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
@@ -55,10 +54,10 @@ public class LongDecimalWithOverflowStateFactory
         private LongBigArray overflows; // lazily initialized on the first overflow
 
         @Override
-        public void ensureCapacity(long size)
+        public void ensureCapacity(int size)
         {
             isNotNull.ensureCapacity(size);
-            unscaledDecimals.ensureCapacity(size * 2);
+            unscaledDecimals.ensureCapacity(size * 2L);
             if (overflows != null) {
                 overflows.ensureCapacity(size);
             }
@@ -79,13 +78,13 @@ public class LongDecimalWithOverflowStateFactory
         @Override
         public long[] getDecimalArray()
         {
-            return unscaledDecimals.getSegment(getGroupId() * 2);
+            return unscaledDecimals.getSegment(getGroupId() * 2L);
         }
 
         @Override
         public int getDecimalArrayOffset()
         {
-            return unscaledDecimals.getOffset(getGroupId() * 2);
+            return unscaledDecimals.getOffset(getGroupId() * 2L);
         }
 
         @Override

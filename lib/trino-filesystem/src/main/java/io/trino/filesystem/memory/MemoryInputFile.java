@@ -14,12 +14,13 @@
 package io.trino.filesystem.memory;
 
 import io.airlift.slice.Slice;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoInput;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.filesystem.TrinoInputStream;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.nio.file.NoSuchFileException;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -30,21 +31,22 @@ import static java.util.Objects.requireNonNull;
 public class MemoryInputFile
         implements TrinoInputFile
 {
-    private final String location;
+    private final Location location;
     private final Supplier<MemoryBlob> dataSupplier;
     private OptionalLong length;
-    private Optional<Instant> lastModified = Optional.empty();
+    private Optional<Instant> lastModified;
 
-    public MemoryInputFile(String location, Slice data)
+    public MemoryInputFile(Location location, Slice data)
     {
-        this(location, () -> new MemoryBlob(data), OptionalLong.of(data.length()));
+        this(location, () -> new MemoryBlob(data), OptionalLong.of(data.length()), Optional.empty());
     }
 
-    public MemoryInputFile(String location, Supplier<MemoryBlob> dataSupplier, OptionalLong length)
+    public MemoryInputFile(Location location, Supplier<MemoryBlob> dataSupplier, OptionalLong length, Optional<Instant> lastModified)
     {
         this.location = requireNonNull(location, "location is null");
         this.dataSupplier = requireNonNull(dataSupplier, "dataSupplier is null");
         this.length = requireNonNull(length, "length is null");
+        this.lastModified = requireNonNull(lastModified, "lastModified is null");
     }
 
     @Override
@@ -89,7 +91,7 @@ public class MemoryInputFile
     }
 
     @Override
-    public String location()
+    public Location location()
     {
         return location;
     }
@@ -97,15 +99,15 @@ public class MemoryInputFile
     @Override
     public String toString()
     {
-        return location();
+        return location.toString();
     }
 
     private MemoryBlob getBlobRequired()
-            throws NoSuchFileException
+            throws FileNotFoundException
     {
         MemoryBlob data = dataSupplier.get();
         if (data == null) {
-            throw new NoSuchFileException(location);
+            throw new FileNotFoundException(toString());
         }
         return data;
     }

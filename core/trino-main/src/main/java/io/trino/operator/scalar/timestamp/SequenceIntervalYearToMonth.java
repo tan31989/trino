@@ -53,9 +53,9 @@ public final class SequenceIntervalYearToMonth
 
         int length = checkMaxEntry(DateDiff.diff(MONTH, start, stop) / step + 1);
 
-        BlockBuilder blockBuilder = SHORT_TYPE.createBlockBuilder(null, length);
+        BlockBuilder blockBuilder = SHORT_TYPE.createFixedSizeBlockBuilder(length);
 
-        int offset = 0;
+        long offset = 0;
         for (int i = 0; i < length; ++i) {
             long value = TimestampPlusIntervalYearToMonth.add(start, offset);
             SHORT_TYPE.writeLong(blockBuilder, value);
@@ -77,9 +77,9 @@ public final class SequenceIntervalYearToMonth
 
         int length = checkMaxEntry(DateDiff.diff(MONTH, start, stop) / step + 1);
 
-        BlockBuilder blockBuilder = LONG_TYPE.createBlockBuilder(null, length);
+        BlockBuilder blockBuilder = LONG_TYPE.createFixedSizeBlockBuilder(length);
 
-        int offset = 0;
+        long offset = 0;
         for (int i = 0; i < length; ++i) {
             LongTimestamp value = TimestampPlusIntervalYearToMonth.add(start, offset);
             LONG_TYPE.writeObject(blockBuilder, value);

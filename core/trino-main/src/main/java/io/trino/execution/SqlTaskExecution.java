@@ -13,23 +13,27 @@
  */
 package io.trino.execution;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.concurrent.SetThreadName;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
+import io.trino.annotation.NotThreadSafe;
 import io.trino.event.SplitMonitor;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.buffer.BufferState;
 import io.trino.execution.buffer.OutputBuffer;
 import io.trino.execution.executor.TaskExecutor;
 import io.trino.execution.executor.TaskHandle;
+import io.trino.metadata.Split;
 import io.trino.operator.Driver;
 import io.trino.operator.DriverContext;
 import io.trino.operator.DriverFactory;
@@ -41,15 +45,12 @@ import io.trino.spi.TrinoException;
 import io.trino.sql.planner.LocalExecutionPlanner.LocalExecutionPlan;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.tracing.TrinoAttributes;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.NotThreadSafe;
+import jakarta.annotation.Nullable;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -139,7 +140,7 @@ public class SqlTaskExecution
         this.splitMonitor = requireNonNull(splitMonitor, "splitMonitor is null");
         this.driverAndTaskTerminationTracker = new DriverAndTaskTerminationTracker(taskStateMachine);
 
-        try (SetThreadName ignored = new SetThreadName("Task-%s", taskId)) {
+        try (SetThreadName _ = new SetThreadName("Task-" + taskId)) {
             List<DriverFactory> driverFactories = localExecutionPlan.getDriverFactories();
             // index driver factories
             Set<PlanNodeId> partitionedSources = ImmutableSet.copyOf(localExecutionPlan.getPartitionedSourceOrder());
@@ -194,7 +195,7 @@ public class SqlTaskExecution
     // this must be synchronized to prevent a concurrent call to checkTaskCompletion() from proceeding before all task lifecycle drivers are created
     public synchronized void start()
     {
-        try (SetThreadName ignored = new SetThreadName("Task-%s", getTaskId())) {
+        try (SetThreadName _ = new SetThreadName("Task-" + getTaskId())) {
             // Signal immediate termination complete if task termination has started
             if (taskStateMachine.getState().isTerminating()) {
                 taskStateMachine.terminationComplete();
@@ -262,7 +263,7 @@ public class SqlTaskExecution
             return;
         }
 
-        try (SetThreadName ignored = new SetThreadName("Task-%s", taskId)) {
+        try (SetThreadName _ = new SetThreadName("Task-" + taskId)) {
             // update our record of split assignments and schedule drivers for new partitioned splits
             Set<PlanNodeId> updatedUnpartitionedSources = updateSplitAssignments(splitAssignments);
             for (PlanNodeId planNodeId : updatedUnpartitionedSources) {
@@ -414,7 +415,7 @@ public class SqlTaskExecution
                 @Override
                 public void onSuccess(Object result)
                 {
-                    try (SetThreadName ignored = new SetThreadName("Task-%s", taskId)) {
+                    try (SetThreadName _ = new SetThreadName("Task-" + taskId)) {
                         // record driver is finished
                         if (remainingSplitRunners.decrementAndGet() == 0) {
                             checkTaskCompletion();
@@ -427,7 +428,7 @@ public class SqlTaskExecution
                 @Override
                 public void onFailure(Throwable cause)
                 {
-                    try (SetThreadName ignored = new SetThreadName("Task-%s", taskId)) {
+                    try (SetThreadName _ = new SetThreadName("Task-" + taskId)) {
                         taskStateMachine.failed(cause);
 
                         // record driver is finished
@@ -550,7 +551,7 @@ public class SqlTaskExecution
     @NotThreadSafe
     private static class PendingSplitsForPlanNode
     {
-        private Set<ScheduledSplit> splits = new HashSet<>();
+        private Set<ScheduledSplit> splits = new LinkedHashSet<>();
         private SplitsState state = ADDING_SPLITS;
         private boolean noMoreSplits;
 
@@ -580,7 +581,7 @@ public class SqlTaskExecution
         {
             checkState(state == ADDING_SPLITS || state == NO_MORE_SPLITS);
             Set<ScheduledSplit> result = splits;
-            splits = new HashSet<>();
+            splits = new LinkedHashSet<>();
             return result;
         }
 
@@ -814,6 +815,7 @@ public class SqlTaskExecution
     private static class DriverSplitRunner
             implements SplitRunner
     {
+        private static final Joiner.MapJoiner JOINER = Joiner.on(";").withKeyValueSeparator("=");
         private final DriverSplitRunnerFactory driverSplitRunnerFactory;
         private final DriverContext driverContext;
 
@@ -891,7 +893,7 @@ public class SqlTaskExecution
         @Override
         public String getInfo()
         {
-            return (partitionedSplit == null) ? "" : partitionedSplit.getSplit().getInfo().toString();
+            return (partitionedSplit == null) ? "" : formatSplitInfo(partitionedSplit.getSplit());
         }
 
         @Override
@@ -906,6 +908,11 @@ public class SqlTaskExecution
             if (driver != null) {
                 driver.close();
             }
+        }
+
+        private static String formatSplitInfo(Split split)
+        {
+            return split.getConnectorSplit().getClass().getSimpleName() + "{" + JOINER.join(split.getInfo()) + "}";
         }
     }
 

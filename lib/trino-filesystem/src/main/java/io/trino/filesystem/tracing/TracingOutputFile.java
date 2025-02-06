@@ -15,6 +15,7 @@ package io.trino.filesystem.tracing;
 
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoOutputFile;
 import io.trino.memory.context.AggregatedMemoryContext;
 
@@ -41,19 +42,29 @@ final class TracingOutputFile
             throws IOException
     {
         Span span = tracer.spanBuilder("OutputFile.create")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, location())
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
                 .startSpan();
         return withTracing(span, () -> delegate.create());
     }
 
     @Override
-    public OutputStream createOrOverwrite()
+    public void createOrOverwrite(byte[] data)
             throws IOException
     {
         Span span = tracer.spanBuilder("OutputFile.createOrOverwrite")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, location())
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
                 .startSpan();
-        return withTracing(span, () -> delegate.createOrOverwrite());
+        withTracing(span, () -> delegate.createOrOverwrite(data));
+    }
+
+    @Override
+    public void createExclusive(byte[] data)
+            throws IOException
+    {
+        Span span = tracer.spanBuilder("OutputFile.createExclusive")
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
+                .startSpan();
+        withTracing(span, () -> delegate.createExclusive(data));
     }
 
     @Override
@@ -61,24 +72,20 @@ final class TracingOutputFile
             throws IOException
     {
         Span span = tracer.spanBuilder("OutputFile.create")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, location())
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
                 .startSpan();
         return withTracing(span, () -> delegate.create(memoryContext));
     }
 
     @Override
-    public OutputStream createOrOverwrite(AggregatedMemoryContext memoryContext)
-            throws IOException
+    public Location location()
     {
-        Span span = tracer.spanBuilder("OutputFile.createOrOverwrite")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, location())
-                .startSpan();
-        return withTracing(span, () -> delegate.createOrOverwrite(memoryContext));
+        return delegate.location();
     }
 
     @Override
-    public String location()
+    public String toString()
     {
-        return delegate.location();
+        return location().toString();
     }
 }

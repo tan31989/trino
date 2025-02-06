@@ -17,7 +17,7 @@ import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.ObjectListing;
 import com.google.inject.Inject;
 import com.google.inject.name.Named;
-import io.trino.tempto.BeforeTestWithContext;
+import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.testng.services.Flaky;
 import io.trino.tests.product.hive.Engine;
 import org.testng.annotations.DataProvider;
@@ -48,10 +48,9 @@ public class TestDeltaLakeDropTableCompatibility
 
     private AmazonS3 s3;
 
-    @BeforeTestWithContext
+    @BeforeMethodWithContext
     public void setup()
     {
-        super.setUp();
         s3 = new S3ClientFactory().createS3Client(s3ServerType);
     }
 

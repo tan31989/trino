@@ -17,7 +17,6 @@ import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
@@ -26,14 +25,14 @@ public class RenameColumn
         extends Statement
 {
     private final QualifiedName table;
-    private final Identifier source;
+    private final QualifiedName source;
     private final Identifier target;
     private final boolean tableExists;
     private final boolean columnExists;
 
-    public RenameColumn(NodeLocation location, QualifiedName table, Identifier source, Identifier target, boolean tableExists, boolean columnExists)
+    public RenameColumn(NodeLocation location, QualifiedName table, QualifiedName source, Identifier target, boolean tableExists, boolean columnExists)
     {
-        super(Optional.of(location));
+        super(location);
         this.table = requireNonNull(table, "table is null");
         this.source = requireNonNull(source, "source is null");
         this.target = requireNonNull(target, "target is null");
@@ -46,7 +45,7 @@ public class RenameColumn
         return table;
     }
 
-    public Identifier getSource()
+    public QualifiedName getSource()
     {
         return source;
     }

@@ -18,13 +18,13 @@ import dev.failsafe.Failsafe;
 import dev.failsafe.RetryPolicy;
 import io.airlift.log.Logger;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
+import io.trino.plugin.base.mapping.DefaultIdentifierMapping;
+import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.JdbcProcedureHandle.ProcedureQuery;
 import io.trino.plugin.jdbc.aggregation.ImplementCountAll;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.RewriteVariable;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
-import io.trino.plugin.jdbc.mapping.DefaultIdentifierMapping;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
@@ -94,12 +94,12 @@ class TestingH2JdbcClient
 
     public TestingH2JdbcClient(BaseJdbcConfig config, ConnectionFactory connectionFactory)
     {
-        this(config, connectionFactory, new DefaultIdentifierMapping());
+        this(config, connectionFactory, new DefaultQueryBuilder(RemoteQueryModifier.NONE), new DefaultIdentifierMapping());
     }
 
-    public TestingH2JdbcClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, IdentifierMapping identifierMapping)
+    public TestingH2JdbcClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, QueryBuilder queryBuilder, IdentifierMapping identifierMapping)
     {
-        super("\"", connectionFactory, new DefaultQueryBuilder(RemoteQueryModifier.NONE), config.getJdbcTypesMappedToVarchar(), identifierMapping, RemoteQueryModifier.NONE, false);
+        super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, RemoteQueryModifier.NONE, false);
     }
 
     @Override
@@ -156,7 +156,7 @@ class TestingH2JdbcClient
             return mapping;
         }
 
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.BOOLEAN:
                 return Optional.of(booleanColumnMapping());
 
@@ -180,14 +180,14 @@ class TestingH2JdbcClient
                 return Optional.of(doubleColumnMapping());
 
             case Types.CHAR:
-                return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), true));
+                return Optional.of(defaultCharColumnMapping(typeHandle.requiredColumnSize(), true));
 
             case Types.VARCHAR:
                 // varchar columns get created as varchar(max_length) in H2
-                if (typeHandle.getRequiredColumnSize() == MAXIMUM_VARCHAR_LENGTH) {
+                if (typeHandle.requiredColumnSize() == MAXIMUM_VARCHAR_LENGTH) {
                     return Optional.of(varcharColumnMapping(createUnboundedVarcharType(), true));
                 }
-                return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), true));
+                return Optional.of(defaultVarcharColumnMapping(typeHandle.requiredColumnSize(), true));
 
             case Types.DATE:
                 return Optional.of(dateColumnMappingUsingSqlDate());
@@ -196,7 +196,7 @@ class TestingH2JdbcClient
                 return Optional.of(timeColumnMapping(TIME_MILLIS));
 
             case Types.TIMESTAMP:
-                TimestampType timestampType = typeHandle.getDecimalDigits()
+                TimestampType timestampType = typeHandle.decimalDigits()
                         .map(TimestampType::createTimestampType)
                         .orElse(TIMESTAMP_MILLIS);
                 return Optional.of(timestampColumnMapping(timestampType));

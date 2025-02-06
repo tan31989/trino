@@ -20,8 +20,7 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.RecordCursor;
 import io.trino.spi.type.Type;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -269,7 +268,6 @@ public class JdbcRecordCursor
         }
     }
 
-    @SuppressWarnings("UnusedDeclaration")
     @Override
     public void close()
     {
@@ -287,7 +285,7 @@ public class JdbcRecordCursor
                     // Trying to cancel running statement as close() may not do it
                     statement.cancel();
                 }
-                catch (SQLException ignored) {
+                catch (SQLException _) {
                     // statement already closed or cancel is not supported
                 }
             }

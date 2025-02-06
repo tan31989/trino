@@ -14,10 +14,9 @@
 package io.trino.metadata;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.trino.client.NodeVersion;
 import io.trino.spi.connector.CatalogHandle;
-
-import javax.annotation.concurrent.ThreadSafe;
 
 import java.net.URI;
 import java.util.Optional;
@@ -60,14 +59,10 @@ public class InMemoryNodeManager
     @Override
     public Set<InternalNode> getNodes(NodeState state)
     {
-        switch (state) {
-            case ACTIVE:
-                return ImmutableSet.copyOf(allNodes);
-            case INACTIVE:
-            case SHUTTING_DOWN:
-                return ImmutableSet.of();
-        }
-        throw new IllegalArgumentException("Unknown node state " + state);
+        return switch (state) {
+            case ACTIVE -> ImmutableSet.copyOf(allNodes);
+            case DRAINING, DRAINED, INACTIVE, SHUTTING_DOWN -> ImmutableSet.of();
+        };
     }
 
     @Override
@@ -87,6 +82,8 @@ public class InMemoryNodeManager
     {
         return new AllNodes(
                 ImmutableSet.copyOf(allNodes),
+                ImmutableSet.of(),
+                ImmutableSet.of(),
                 ImmutableSet.of(),
                 ImmutableSet.of(),
                 ImmutableSet.of(CURRENT_NODE));

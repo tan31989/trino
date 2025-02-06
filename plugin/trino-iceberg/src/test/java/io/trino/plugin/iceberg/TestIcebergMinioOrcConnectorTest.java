@@ -14,47 +14,35 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.io.Resources;
 import io.trino.Session;
-import io.trino.filesystem.TrinoFileSystem;
-import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
-import io.trino.hdfs.ConfigurationInitializer;
-import io.trino.hdfs.DynamicHdfsConfiguration;
-import io.trino.hdfs.HdfsConfig;
-import io.trino.hdfs.HdfsConfiguration;
-import io.trino.hdfs.HdfsConfigurationInitializer;
-import io.trino.hdfs.HdfsEnvironment;
-import io.trino.hdfs.authentication.NoHdfsAuthentication;
-import io.trino.plugin.hive.s3.HiveS3Config;
-import io.trino.plugin.hive.s3.TrinoS3ConfigurationInitializer;
+import io.trino.filesystem.Location;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.containers.Minio;
 import io.trino.testing.sql.TestTable;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
-import java.io.File;
-import java.io.OutputStream;
-import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
-import java.util.OptionalInt;
+import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.io.Resources.getResource;
 import static io.trino.plugin.iceberg.IcebergFileFormat.ORC;
 import static io.trino.plugin.iceberg.IcebergTestUtils.checkOrcFileSorting;
-import static io.trino.testing.TestingConnectorSession.SESSION;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.containers.Minio.MINIO_ACCESS_KEY;
+import static io.trino.testing.containers.Minio.MINIO_REGION;
 import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
 /**
  * Iceberg connector test ORC and with S3-compatible storage (but without real metastore).
  */
+@Execution(SAME_THREAD)
 public class TestIcebergMinioOrcConnectorTest
         extends BaseIcebergConnectorTest
 {
@@ -77,12 +65,16 @@ public class TestIcebergMinioOrcConnectorTest
                 .setIcebergProperties(
                         ImmutableMap.<String, String>builder()
                                 .put("iceberg.file-format", format.name())
-                                .put("hive.s3.aws-access-key", MINIO_ACCESS_KEY)
-                                .put("hive.s3.aws-secret-key", MINIO_SECRET_KEY)
-                                .put("hive.s3.endpoint", minio.getMinioAddress())
-                                .put("hive.s3.path-style-access", "true")
-                                .put("hive.s3.streaming.part-size", "5MB") // minimize memory usage
+                                .put("fs.native-s3.enabled", "true")
+                                .put("s3.aws-access-key", MINIO_ACCESS_KEY)
+                                .put("s3.aws-secret-key", MINIO_SECRET_KEY)
+                                .put("s3.region", MINIO_REGION)
+                                .put("s3.endpoint", minio.getMinioAddress())
+                                .put("s3.path-style-access", "true")
+                                .put("s3.streaming.part-size", "5MB") // minimize memory usage
+                                .put("s3.max-connections", "8") // verify no leaks
                                 .put("iceberg.register-table-procedure.enabled", "true")
+                                .put("iceberg.allowed-extra-properties", "extra.property.one,extra.property.two,extra.property.three")
                                 // Allows testing the sorting writer flushing to the file system with smaller tables
                                 .put("iceberg.writer-sort-buffer-size", "1MB")
                                 .buildOrThrow())
@@ -93,18 +85,6 @@ public class TestIcebergMinioOrcConnectorTest
                                 .withSchemaProperties(Map.of("location", "'s3://" + bucketName + "/iceberg_data/tpch'"))
                                 .build())
                 .build();
-    }
-
-    @Override
-    @BeforeClass
-    public void initFileSystemFactory()
-    {
-        ConfigurationInitializer s3Config = new TrinoS3ConfigurationInitializer(new HiveS3Config()
-                .setS3AwsAccessKey(MINIO_ACCESS_KEY)
-                .setS3AwsSecretKey(MINIO_SECRET_KEY));
-        HdfsConfigurationInitializer initializer = new HdfsConfigurationInitializer(new HdfsConfig(), ImmutableSet.of(s3Config));
-        HdfsConfiguration hdfsConfiguration = new DynamicHdfsConfiguration(initializer, ImmutableSet.of());
-        this.fileSystemFactory = new HdfsFileSystemFactory(new HdfsEnvironment(hdfsConfiguration, new HdfsConfig(), new NoHdfsAuthentication()));
     }
 
     @Override
@@ -123,7 +103,14 @@ public class TestIcebergMinioOrcConnectorTest
     @Override
     protected boolean isFileSorted(String path, String sortColumnName)
     {
-        return checkOrcFileSorting(fileSystemFactory, path, sortColumnName);
+        return checkOrcFileSorting(fileSystem, Location.of(path), sortColumnName);
+    }
+
+    @Override
+    protected boolean supportsPhysicalPushdown()
+    {
+        // TODO https://github.com/trinodb/trino/issues/17156
+        return false;
     }
 
     @Test
@@ -144,13 +131,11 @@ public class TestIcebergMinioOrcConnectorTest
             throws Exception
     {
         checkArgument(expectedValue != 0);
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_as_integer", "(\"_col0\") AS VALUES 0, NULL")) {
+        try (TestTable table = newTrinoTable("test_read_as_integer", "(\"_col0\") AS VALUES 0, NULL")) {
             String orcFilePath = (String) computeScalar(format("SELECT DISTINCT file_path FROM \"%s$files\"", table.getName()));
-            TrinoFileSystem fileSystem = fileSystemFactory.create(SESSION);
-            try (OutputStream outputStream = fileSystem.newOutputFile(orcFilePath).createOrOverwrite()) {
-                Files.copy(new File(getResource(orcFileResourceName).toURI()).toPath(), outputStream);
-            }
-            fileSystem.deleteFiles(List.of(orcFilePath.replaceAll("/([^/]*)$", ".$1.crc")));
+            byte[] orcFileData = Resources.toByteArray(getResource(orcFileResourceName));
+            fileSystem.newOutputFile(Location.of(orcFilePath)).createOrOverwrite(orcFileData);
+            fileSystem.deleteFiles(List.of(Location.of(orcFilePath.replaceAll("/([^/]*)$", ".$1.crc"))));
 
             Session ignoreFileSizeFromMetadata = Session.builder(getSession())
                     // The replaced and replacing file sizes may be different
@@ -161,25 +146,32 @@ public class TestIcebergMinioOrcConnectorTest
         }
     }
 
-    @Override
-    public void testDropAmbiguousRowFieldCaseSensitivity()
+    @Test
+    public void testTimeType()
     {
-        // TODO https://github.com/trinodb/trino/issues/16273 The connector can't read row types having ambiguous field names in ORC files. e.g. row(X int, x int)
-        assertThatThrownBy(super::testDropAmbiguousRowFieldCaseSensitivity)
-                .hasMessageContaining("Error opening Iceberg split")
-                .hasStackTraceContaining("Multiple entries with same key");
+        // Regression test for https://github.com/trinodb/trino/issues/15603
+        try (TestTable table = newTrinoTable("test_time", "(col time(6))")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (TIME '13:30:00'), (TIME '14:30:00'), (NULL)", 3);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES '13:30:00', '14:30:00', NULL");
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    """
+                            VALUES
+                            ('col', null, 2.0, 0.33333333333, null, null, null),
+                            (null, null, null, null, 3, null, null)
+                            """);
+        }
     }
 
     @Override
-    protected OptionalInt maxTableNameLength()
+    protected Optional<TypeCoercionTestSetup> filterTypeCoercionOnCreateTableAsSelectProvider(TypeCoercionTestSetup setup)
     {
-        // Value depends on test setup (catalog, storage). Picked experimentally.
-        return OptionalInt.of(213);
-    }
-
-    @Override
-    protected void verifyTableNameLengthFailurePermissible(Throwable e)
-    {
-        assertThat(e).hasMessageMatching("Could not create new table directory|Could not validate external location");
+        if (setup.sourceValueLiteral().equals("TIMESTAMP '1969-12-31 23:59:59.999999499999'")) {
+            return Optional.of(setup.withNewValueLiteral("TIMESTAMP '1970-01-01 00:00:00.999999'"));
+        }
+        if (setup.sourceValueLiteral().equals("TIMESTAMP '1969-12-31 23:59:59.9999994'")) {
+            return Optional.of(setup.withNewValueLiteral("TIMESTAMP '1970-01-01 00:00:00.999999'"));
+        }
+        return Optional.of(setup);
     }
 }

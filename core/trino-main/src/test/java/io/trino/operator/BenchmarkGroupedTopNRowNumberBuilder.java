@@ -88,7 +88,7 @@ public class BenchmarkGroupedTopNRowNumberBuilder
 
         public GroupedTopNRowNumberBuilder newTopNRowNumberBuilder()
         {
-            return new GroupedTopNRowNumberBuilder(types, comparator, topN, false, new CyclingGroupByHash(groupCount));
+            return new GroupedTopNRowNumberBuilder(types, comparator, topN, false, new int[0], new CyclingGroupByHash(groupCount));
         }
 
         public Page getPage()
@@ -145,10 +145,10 @@ public class BenchmarkGroupedTopNRowNumberBuilder
             pageBuilder.declarePosition();
 
             LineItem lineItem = iterator.next();
-            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(EXTENDED_PRICE), lineItem.getExtendedPrice());
-            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(DISCOUNT), lineItem.getDiscount());
-            DATE.writeLong(pageBuilder.getBlockBuilder(SHIP_DATE), lineItem.getShipDate());
-            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(QUANTITY), lineItem.getQuantity());
+            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(EXTENDED_PRICE), lineItem.extendedPrice());
+            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(DISCOUNT), lineItem.discount());
+            DATE.writeLong(pageBuilder.getBlockBuilder(SHIP_DATE), lineItem.shipDate());
+            DOUBLE.writeDouble(pageBuilder.getBlockBuilder(QUANTITY), lineItem.quantity());
         }
         return pageBuilder.build();
     }

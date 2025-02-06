@@ -47,7 +47,9 @@ public final class SessionRepresentation
     private final Optional<TransactionId> transactionId;
     private final boolean clientTransactionSupport;
     private final String user;
+    private final String originalUser;
     private final Set<String> groups;
+    private final Set<String> originalUserGroups;
     private final Optional<String> principal;
     private final Set<String> enabledRoles;
     private final Optional<String> source;
@@ -69,6 +71,7 @@ public final class SessionRepresentation
     private final Map<String, SelectedRole> catalogRoles;
     private final Map<String, String> preparedStatements;
     private final String protocolName;
+    private final Optional<String> queryDataEncoding;
 
     @JsonCreator
     public SessionRepresentation(
@@ -77,7 +80,9 @@ public final class SessionRepresentation
             @JsonProperty("transactionId") Optional<TransactionId> transactionId,
             @JsonProperty("clientTransactionSupport") boolean clientTransactionSupport,
             @JsonProperty("user") String user,
+            @JsonProperty("originalUser") String originalUser,
             @JsonProperty("groups") Set<String> groups,
+            @JsonProperty("originalUserGroups") Set<String> originalUserGroups,
             @JsonProperty("principal") Optional<String> principal,
             @JsonProperty("enabledRoles") Set<String> enabledRoles,
             @JsonProperty("source") Optional<String> source,
@@ -98,14 +103,17 @@ public final class SessionRepresentation
             @JsonProperty("catalogProperties") Map<String, Map<String, String>> catalogProperties,
             @JsonProperty("catalogRoles") Map<String, SelectedRole> catalogRoles,
             @JsonProperty("preparedStatements") Map<String, String> preparedStatements,
-            @JsonProperty("protocolName") String protocolName)
+            @JsonProperty("protocolName") String protocolName,
+            @JsonProperty("queryDataEncoding") Optional<String> queryDataEncoding)
     {
         this.queryId = requireNonNull(queryId, "queryId is null");
         this.querySpan = requireNonNull(querySpan, "querySpan is null");
         this.transactionId = requireNonNull(transactionId, "transactionId is null");
         this.clientTransactionSupport = clientTransactionSupport;
         this.user = requireNonNull(user, "user is null");
+        this.originalUser = requireNonNull(originalUser, "originalUser is null");
         this.groups = requireNonNull(groups, "groups is null");
+        this.originalUserGroups = requireNonNull(originalUserGroups, "originalUserGroups is null");
         this.principal = requireNonNull(principal, "principal is null");
         this.enabledRoles = ImmutableSet.copyOf(requireNonNull(enabledRoles, "enabledRoles is null"));
         this.source = requireNonNull(source, "source is null");
@@ -126,6 +134,7 @@ public final class SessionRepresentation
         this.catalogRoles = ImmutableMap.copyOf(catalogRoles);
         this.preparedStatements = ImmutableMap.copyOf(preparedStatements);
         this.protocolName = requireNonNull(protocolName, "protocolName is null");
+        this.queryDataEncoding = requireNonNull(queryDataEncoding, "queryDataEncoding is null");
 
         ImmutableMap.Builder<String, Map<String, String>> catalogPropertiesBuilder = ImmutableMap.builder();
         for (Entry<String, Map<String, String>> entry : catalogProperties.entrySet()) {
@@ -165,9 +174,21 @@ public final class SessionRepresentation
     }
 
     @JsonProperty
+    public String getOriginalUser()
+    {
+        return originalUser;
+    }
+
+    @JsonProperty
     public Set<String> getGroups()
     {
         return groups;
+    }
+
+    @JsonProperty
+    public Set<String> getOriginalUserGroups()
+    {
+        return originalUserGroups;
     }
 
     @JsonProperty
@@ -302,6 +323,12 @@ public final class SessionRepresentation
         return timeZoneKey.getId();
     }
 
+    @JsonProperty
+    public Optional<String> getQueryDataEncoding()
+    {
+        return queryDataEncoding;
+    }
+
     public Identity toIdentity()
     {
         return toIdentity(emptyMap());
@@ -314,6 +341,15 @@ public final class SessionRepresentation
                 .withPrincipal(principal.map(BasicPrincipal::new))
                 .withEnabledRoles(enabledRoles)
                 .withConnectorRoles(catalogRoles)
+                .withExtraCredentials(extraCredentials)
+                .build();
+    }
+
+    public Identity toOriginalIdentity(Map<String, String> extraCredentials)
+    {
+        return Identity.forUser(originalUser)
+                .withGroups(originalUserGroups)
+                .withPrincipal(principal.map(BasicPrincipal::new))
                 .withExtraCredentials(extraCredentials)
                 .build();
     }
@@ -331,6 +367,7 @@ public final class SessionRepresentation
                 transactionId,
                 clientTransactionSupport,
                 toIdentity(extraCredentials),
+                toOriginalIdentity(extraCredentials),
                 source,
                 catalog,
                 schema,
@@ -350,6 +387,7 @@ public final class SessionRepresentation
                 sessionPropertyManager,
                 preparedStatements,
                 createProtocolHeaders(protocolName),
-                exchangeEncryptionKey);
+                exchangeEncryptionKey,
+                queryDataEncoding);
     }
 }

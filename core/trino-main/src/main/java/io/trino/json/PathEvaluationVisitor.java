@@ -51,6 +51,7 @@ import io.trino.json.ir.IrPathNode;
 import io.trino.json.ir.IrPredicateCurrentItemVariable;
 import io.trino.json.ir.IrSizeMethod;
 import io.trino.json.ir.IrTypeMethod;
+import io.trino.json.ir.JsonLiteralConversionException;
 import io.trino.json.ir.SqlJsonLiteralConverter;
 import io.trino.json.ir.TypedValue;
 import io.trino.spi.function.OperatorType;
@@ -83,8 +84,8 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.json.CachingResolver.ResolvedOperatorAndCoercions.RESOLUTION_ERROR;
 import static io.trino.json.JsonEmptySequenceNode.EMPTY_SEQUENCE;
-import static io.trino.json.PathEvaluationError.itemTypeError;
-import static io.trino.json.PathEvaluationError.structuralError;
+import static io.trino.json.PathEvaluationException.itemTypeError;
+import static io.trino.json.PathEvaluationException.structuralError;
 import static io.trino.json.PathEvaluationUtil.unwrapArrays;
 import static io.trino.json.ir.IrArithmeticUnary.Sign.PLUS;
 import static io.trino.json.ir.SqlJsonLiteralConverter.getTextTypedValue;
@@ -146,7 +147,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrAbsMethod(IrAbsMethod node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         if (lax) {
             sequence = unwrapArrays(sequence);
@@ -155,9 +156,9 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             TypedValue value;
-            if (object instanceof JsonNode) {
-                value = getNumericTypedValue((JsonNode) object)
-                        .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) object).getNodeType().name()));
+            if (object instanceof JsonNode jsonNode) {
+                value = getNumericTypedValue(jsonNode)
+                        .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
             }
             else {
                 value = (TypedValue) object;
@@ -182,7 +183,7 @@ class PathEvaluationVisitor
                 absValue = abs(value);
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, absValue);
         }
@@ -196,7 +197,7 @@ class PathEvaluationVisitor
                 absValue = absInteger(value);
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, absValue);
         }
@@ -210,7 +211,7 @@ class PathEvaluationVisitor
                 absValue = absSmallint(value);
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, absValue);
         }
@@ -224,7 +225,7 @@ class PathEvaluationVisitor
                 absValue = absTinyint(value);
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, absValue);
         }
@@ -242,8 +243,8 @@ class PathEvaluationVisitor
             }
             return new TypedValue(type, floatToRawIntBits(Math.abs(value)));
         }
-        if (type instanceof DecimalType) {
-            if (((DecimalType) type).isShort()) {
+        if (type instanceof DecimalType decimalType) {
+            if (decimalType.isShort()) {
                 long value = typedValue.getLongValue();
                 if (value > 0) {
                     return typedValue;
@@ -257,7 +258,7 @@ class PathEvaluationVisitor
                     result = DecimalOperators.Negation.negate((Int128) typedValue.getObjectValue());
                 }
                 catch (Exception e) {
-                    throw new PathEvaluationError(e);
+                    throw new PathEvaluationException(e);
                 }
                 return new TypedValue(type, result);
             }
@@ -270,8 +271,8 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrArithmeticBinary(IrArithmeticBinary node, PathEvaluationContext context)
     {
-        List<Object> leftSequence = process(node.getLeft(), context);
-        List<Object> rightSequence = process(node.getRight(), context);
+        List<Object> leftSequence = process(node.left(), context);
+        List<Object> rightSequence = process(node.right(), context);
 
         if (lax) {
             leftSequence = unwrapArrays(leftSequence);
@@ -279,14 +280,14 @@ class PathEvaluationVisitor
         }
 
         if (leftSequence.size() != 1 || rightSequence.size() != 1) {
-            throw new PathEvaluationError("arithmetic binary expression requires singleton operands");
+            throw new PathEvaluationException("arithmetic binary expression requires singleton operands");
         }
 
         TypedValue left;
         Object leftObject = getOnlyElement(leftSequence);
-        if (leftObject instanceof JsonNode) {
-            left = getNumericTypedValue((JsonNode) leftObject)
-                    .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) leftObject).getNodeType().name()));
+        if (leftObject instanceof JsonNode jsonNode) {
+            left = getNumericTypedValue(jsonNode)
+                    .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
         }
         else {
             left = (TypedValue) leftObject;
@@ -294,17 +295,17 @@ class PathEvaluationVisitor
 
         TypedValue right;
         Object rightObject = getOnlyElement(rightSequence);
-        if (rightObject instanceof JsonNode) {
-            right = getNumericTypedValue((JsonNode) rightObject)
-                    .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) rightObject).getNodeType().name()));
+        if (rightObject instanceof JsonNode jsonNode) {
+            right = getNumericTypedValue(jsonNode)
+                    .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
         }
         else {
             right = (TypedValue) rightObject;
         }
 
-        ResolvedOperatorAndCoercions operators = resolver.getOperators(node, OperatorType.valueOf(node.getOperator().name()), left.getType(), right.getType());
+        ResolvedOperatorAndCoercions operators = resolver.getOperators(node, OperatorType.valueOf(node.operator().name()), left.getType(), right.getType());
         if (operators == RESOLUTION_ERROR) {
-            throw new PathEvaluationError(format("invalid operand types to %s operator (%s, %s)", node.getOperator().name(), left.getType(), right.getType()));
+            throw new PathEvaluationException(format("invalid operand types to %s operator (%s, %s)", node.operator().name(), left.getType(), right.getType()));
         }
 
         Object leftInput = left.getValueAsObject();
@@ -313,7 +314,7 @@ class PathEvaluationVisitor
                 leftInput = invoker.invoke(operators.getLeftCoercion().get(), ImmutableList.of(leftInput));
             }
             catch (RuntimeException e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
         }
 
@@ -323,7 +324,7 @@ class PathEvaluationVisitor
                 rightInput = invoker.invoke(operators.getRightCoercion().get(), ImmutableList.of(rightInput));
             }
             catch (RuntimeException e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
         }
 
@@ -332,16 +333,16 @@ class PathEvaluationVisitor
             result = invoker.invoke(operators.getOperator(), ImmutableList.of(leftInput, rightInput));
         }
         catch (RuntimeException e) {
-            throw new PathEvaluationError(e);
+            throw new PathEvaluationException(e);
         }
 
-        return ImmutableList.of(TypedValue.fromValueAsObject(operators.getOperator().getSignature().getReturnType(), result));
+        return ImmutableList.of(TypedValue.fromValueAsObject(operators.getOperator().signature().getReturnType(), result));
     }
 
     @Override
     protected List<Object> visitIrArithmeticUnary(IrArithmeticUnary node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         if (lax) {
             sequence = unwrapArrays(sequence);
@@ -350,9 +351,9 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             TypedValue value;
-            if (object instanceof JsonNode) {
-                value = getNumericTypedValue((JsonNode) object)
-                        .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) object).getNodeType().name()));
+            if (object instanceof JsonNode jsonNode) {
+                value = getNumericTypedValue(jsonNode)
+                        .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
             }
             else {
                 value = (TypedValue) object;
@@ -361,7 +362,7 @@ class PathEvaluationVisitor
                     throw itemTypeError("NUMBER", type.getDisplayName());
                 }
             }
-            if (node.getSign() == PLUS) {
+            if (node.sign() == PLUS) {
                 outputSequence.add(value);
             }
             else {
@@ -382,7 +383,7 @@ class PathEvaluationVisitor
                 negatedValue = BigintOperators.negate(typedValue.getLongValue());
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, negatedValue);
         }
@@ -392,7 +393,7 @@ class PathEvaluationVisitor
                 negatedValue = IntegerOperators.negate(typedValue.getLongValue());
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, negatedValue);
         }
@@ -402,7 +403,7 @@ class PathEvaluationVisitor
                 negatedValue = SmallintOperators.negate(typedValue.getLongValue());
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, negatedValue);
         }
@@ -412,7 +413,7 @@ class PathEvaluationVisitor
                 negatedValue = TinyintOperators.negate(typedValue.getLongValue());
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, negatedValue);
         }
@@ -422,8 +423,8 @@ class PathEvaluationVisitor
         if (type.equals(REAL)) {
             return new TypedValue(type, RealOperators.negate(typedValue.getLongValue()));
         }
-        if (type instanceof DecimalType) {
-            if (((DecimalType) type).isShort()) {
+        if (type instanceof DecimalType decimalType) {
+            if (decimalType.isShort()) {
                 return new TypedValue(type, -typedValue.getLongValue());
             }
             Int128 negatedValue;
@@ -431,7 +432,7 @@ class PathEvaluationVisitor
                 negatedValue = DecimalOperators.Negation.negate((Int128) typedValue.getObjectValue());
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
             return new TypedValue(type, negatedValue);
         }
@@ -442,31 +443,31 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrArrayAccessor(IrArrayAccessor node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             List<Object> elements;
-            if (object instanceof JsonNode) {
-                if (((JsonNode) object).isArray()) {
-                    elements = ImmutableList.copyOf(((JsonNode) object).elements());
+            if (object instanceof JsonNode jsonNode) {
+                if (jsonNode.isArray()) {
+                    elements = ImmutableList.copyOf(jsonNode.elements());
                 }
                 else if (lax) {
-                    elements = ImmutableList.of((object));
+                    elements = ImmutableList.of(object);
                 }
                 else {
                     throw itemTypeError("ARRAY", ((JsonNode) object).getNodeType().name());
                 }
             }
             else if (lax) {
-                elements = ImmutableList.of((object));
+                elements = ImmutableList.of(object);
             }
             else {
                 throw itemTypeError("ARRAY", ((TypedValue) object).getType().getDisplayName());
             }
 
             // handle wildcard accessor
-            if (node.getSubscripts().isEmpty()) {
+            if (node.subscripts().isEmpty()) {
                 outputSequence.addAll(elements);
                 continue;
             }
@@ -480,14 +481,14 @@ class PathEvaluationVisitor
             }
 
             PathEvaluationContext arrayContext = context.withLast(elements.size() - 1);
-            for (IrArrayAccessor.Subscript subscript : node.getSubscripts()) {
-                List<Object> from = process(subscript.getFrom(), arrayContext);
-                Optional<List<Object>> to = subscript.getTo().map(path -> process(path, arrayContext));
+            for (IrArrayAccessor.Subscript subscript : node.subscripts()) {
+                List<Object> from = process(subscript.from(), arrayContext);
+                Optional<List<Object>> to = subscript.to().map(path -> process(path, arrayContext));
                 if (from.size() != 1) {
-                    throw new PathEvaluationError("array subscript 'from' value must be singleton numeric");
+                    throw new PathEvaluationException("array subscript 'from' value must be singleton numeric");
                 }
                 if (to.isPresent() && to.get().size() != 1) {
-                    throw new PathEvaluationError("array subscript 'to' value must be singleton numeric");
+                    throw new PathEvaluationException("array subscript 'to' value must be singleton numeric");
                 }
                 long fromIndex = asArrayIndex(getOnlyElement(from));
                 long toIndex = to
@@ -521,10 +522,10 @@ class PathEvaluationVisitor
     {
         if (object instanceof JsonNode jsonNode) {
             if (jsonNode.getNodeType() != JsonNodeType.NUMBER) {
-                throw itemTypeError("NUMBER", (jsonNode.getNodeType().name()));
+                throw itemTypeError("NUMBER", jsonNode.getNodeType().name());
             }
             if (!jsonNode.canConvertToLong()) {
-                throw new PathEvaluationError(format("cannot convert value %s to long", jsonNode));
+                throw new PathEvaluationException(format("cannot convert value %s to long", jsonNode));
             }
             return jsonNode.longValue();
         }
@@ -538,7 +539,7 @@ class PathEvaluationVisitor
                 return DoubleOperators.castToLong(value.getDoubleValue());
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
         }
         if (type.equals(REAL)) {
@@ -546,13 +547,13 @@ class PathEvaluationVisitor
                 return RealOperators.castToLong(value.getLongValue());
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
         }
         if (type instanceof DecimalType decimalType) {
             int precision = decimalType.getPrecision();
             int scale = decimalType.getScale();
-            if (((DecimalType) type).isShort()) {
+            if (decimalType.isShort()) {
                 long tenToScale = longTenToNth(DecimalConversions.intScale(scale));
                 return DecimalCasts.shortDecimalToBigint(value.getLongValue(), precision, scale, tenToScale);
             }
@@ -561,7 +562,7 @@ class PathEvaluationVisitor
                 return DecimalCasts.longDecimalToBigint((Int128) value.getObjectValue(), precision, scale, tenToScale);
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
         }
 
@@ -571,7 +572,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrCeilingMethod(IrCeilingMethod node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         if (lax) {
             sequence = unwrapArrays(sequence);
@@ -580,9 +581,9 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             TypedValue value;
-            if (object instanceof JsonNode) {
-                value = getNumericTypedValue((JsonNode) object)
-                        .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) object).getNodeType().name()));
+            if (object instanceof JsonNode jsonNode) {
+                value = getNumericTypedValue(jsonNode)
+                        .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
             }
             else {
                 value = (TypedValue) object;
@@ -617,14 +618,14 @@ class PathEvaluationVisitor
                     return new TypedValue(resultType, ceilingLongShort(scale, (Int128) typedValue.getObjectValue()));
                 }
                 catch (Exception e) {
-                    throw new PathEvaluationError(e);
+                    throw new PathEvaluationException(e);
                 }
             }
             try {
                 return new TypedValue(resultType, ceilingLong(scale, (Int128) typedValue.getObjectValue()));
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
         }
 
@@ -634,7 +635,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrConstantJsonSequence(IrConstantJsonSequence node, PathEvaluationContext context)
     {
-        return ImmutableList.copyOf(node.getSequence());
+        return ImmutableList.copyOf(node.sequence());
     }
 
     @Override
@@ -652,11 +653,11 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrDescendantMemberAccessor(IrDescendantMemberAccessor node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         ImmutableList.Builder<Object> builder = ImmutableList.builder();
         sequence.stream()
-                .forEach(object -> descendants(object, node.getKey(), builder));
+                .forEach(object -> descendants(object, node.key(), builder));
 
         return builder.build();
     }
@@ -683,7 +684,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrDoubleMethod(IrDoubleMethod node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         if (lax) {
             sequence = unwrapArrays(sequence);
@@ -722,7 +723,7 @@ class PathEvaluationVisitor
         if (type instanceof DecimalType decimalType) {
             int precision = decimalType.getPrecision();
             int scale = decimalType.getScale();
-            if (((DecimalType) type).isShort()) {
+            if (decimalType.isShort()) {
                 long tenToScale = longTenToNth(DecimalConversions.intScale(scale));
                 return new TypedValue(DOUBLE, shortDecimalToDouble(typedValue.getLongValue(), precision, scale, tenToScale));
             }
@@ -734,7 +735,7 @@ class PathEvaluationVisitor
                 return new TypedValue(DOUBLE, VarcharOperators.castToDouble((Slice) typedValue.getObjectValue()));
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
         }
 
@@ -744,7 +745,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrFilter(IrFilter node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         if (lax) {
             sequence = unwrapArrays(sequence);
@@ -753,7 +754,7 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             PathEvaluationContext currentItemContext = context.withCurrentItem(object);
-            Boolean result = predicateVisitor.process(node.getPredicate(), currentItemContext);
+            Boolean result = predicateVisitor.process(node.predicate(), currentItemContext);
             if (Boolean.TRUE.equals(result)) {
                 outputSequence.add(object);
             }
@@ -765,7 +766,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrFloorMethod(IrFloorMethod node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         if (lax) {
             sequence = unwrapArrays(sequence);
@@ -803,7 +804,7 @@ class PathEvaluationVisitor
         if (type instanceof DecimalType decimalType) {
             int scale = decimalType.getScale();
             DecimalType resultType = DecimalType.createDecimalType(decimalType.getPrecision() - scale + Math.min(scale, 1), 0);
-            if (((DecimalType) type).isShort()) {
+            if (decimalType.isShort()) {
                 return new TypedValue(resultType, floorShort(scale, typedValue.getLongValue()));
             }
             if (resultType.isShort()) {
@@ -811,14 +812,14 @@ class PathEvaluationVisitor
                     return new TypedValue(resultType, floorLongShort(scale, (Int128) typedValue.getObjectValue()));
                 }
                 catch (Exception e) {
-                    throw new PathEvaluationError(e);
+                    throw new PathEvaluationException(e);
                 }
             }
             try {
                 return new TypedValue(resultType, floorLong(scale, (Int128) typedValue.getObjectValue()));
             }
             catch (Exception e) {
-                throw new PathEvaluationError(e);
+                throw new PathEvaluationException(e);
             }
         }
 
@@ -834,7 +835,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrKeyValueMethod(IrKeyValueMethod node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         if (lax) {
             sequence = unwrapArrays(sequence);
@@ -842,16 +843,16 @@ class PathEvaluationVisitor
 
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
-            if (!(object instanceof JsonNode)) {
+            if (!(object instanceof JsonNode jsonNode)) {
                 throw itemTypeError("OBJECT", ((TypedValue) object).getType().getDisplayName());
             }
-            if (!((JsonNode) object).isObject()) {
-                throw itemTypeError("OBJECT", ((JsonNode) object).getNodeType().name());
+            if (!jsonNode.isObject()) {
+                throw itemTypeError("OBJECT", jsonNode.getNodeType().name());
             }
 
             // non-unique keys are not supported. if they were, we should follow the spec here on handling them.
             // see the comment in `visitIrMemberAccessor` method.
-            ((JsonNode) object).fields().forEachRemaining(
+            jsonNode.fields().forEachRemaining(
                     field -> outputSequence.add(new ObjectNode(
                             JsonNodeFactory.instance,
                             ImmutableMap.of(
@@ -873,13 +874,13 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrLiteral(IrLiteral node, PathEvaluationContext context)
     {
-        return ImmutableList.of(TypedValue.fromValueAsObject(node.getType().orElseThrow(), node.getValue()));
+        return ImmutableList.of(TypedValue.fromValueAsObject(node.type().orElseThrow(), node.value()));
     }
 
     @Override
     protected List<Object> visitIrMemberAccessor(IrMemberAccessor node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         if (lax) {
             sequence = unwrapArrays(sequence);
@@ -903,14 +904,14 @@ class PathEvaluationVisitor
 
             if (object instanceof JsonNode jsonNode && jsonNode.isObject()) {
                 // handle wildcard member accessor
-                if (node.getKey().isEmpty()) {
+                if (node.key().isEmpty()) {
                     outputSequence.addAll(jsonNode.elements());
                 }
                 else {
-                    JsonNode boundValue = jsonNode.get(node.getKey().get());
+                    JsonNode boundValue = jsonNode.get(node.key().get());
                     if (boundValue == null) {
                         if (!lax) {
-                            throw structuralError("missing member '%s' in JSON object", node.getKey().get());
+                            throw structuralError("missing member '%s' in JSON object", node.key().get());
                         }
                     }
                     else {
@@ -926,7 +927,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrNamedJsonVariable(IrNamedJsonVariable node, PathEvaluationContext context)
     {
-        Object value = parameters[node.getIndex()];
+        Object value = parameters[node.index()];
         checkState(value != null, "missing value for parameter");
         checkState(value instanceof JsonNode, "expected JSON, got SQL value");
 
@@ -939,7 +940,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrNamedValueVariable(IrNamedValueVariable node, PathEvaluationContext context)
     {
-        Object value = parameters[node.getIndex()];
+        Object value = parameters[node.index()];
         checkState(value != null, "missing value for parameter");
         checkState(value instanceof TypedValue || value instanceof NullNode, "expected SQL value or JSON null, got non-null JSON");
 
@@ -955,7 +956,7 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrSizeMethod(IrSizeMethod node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
@@ -985,9 +986,9 @@ class PathEvaluationVisitor
     @Override
     protected List<Object> visitIrTypeMethod(IrTypeMethod node, PathEvaluationContext context)
     {
-        List<Object> sequence = process(node.getBase(), context);
+        List<Object> sequence = process(node.base(), context);
 
-        Type resultType = node.getType().orElseThrow();
+        Type resultType = node.type().orElseThrow();
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
 
         // In case when a new type is supported in JSON path, it might be necessary to update the
@@ -1055,8 +1056,8 @@ class PathEvaluationVisitor
         try {
             return SqlJsonLiteralConverter.getNumericTypedValue(jsonNode);
         }
-        catch (SqlJsonLiteralConverter.JsonLiteralConversionError e) {
-            throw new PathEvaluationError(e);
+        catch (JsonLiteralConversionException e) {
+            throw new PathEvaluationException(e);
         }
     }
 }

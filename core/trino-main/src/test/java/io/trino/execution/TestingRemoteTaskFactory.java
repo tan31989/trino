@@ -20,6 +20,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.stats.TDigest;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
@@ -40,8 +41,6 @@ import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.plan.DynamicFilterId;
 import io.trino.sql.planner.plan.PlanNodeId;
 import org.joda.time.DateTime;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.net.URI;
 import java.util.HashMap;
@@ -75,6 +74,7 @@ public class TestingRemoteTaskFactory
             Span stageSpan,
             TaskId taskId,
             InternalNode node,
+            boolean speculative,
             PlanFragment fragment,
             Multimap<PlanNodeId, Split> initialSplits,
             OutputBuffers outputBuffers,
@@ -154,6 +154,7 @@ public class TestingRemoteTaskFactory
                             0,
                             Optional.empty(),
                             Optional.of(new TDigestHistogram(new TDigest())),
+                            Optional.empty(),
                             Optional.empty()),
                     ImmutableSet.copyOf(noMoreSplits),
                     new TaskStats(DateTime.now(), null),
@@ -176,10 +177,12 @@ public class TestingRemoteTaskFactory
                     state,
                     location,
                     nodeId,
+                    false,
                     failures,
                     0,
                     0,
                     OutputBufferStatus.initial(),
+                    DataSize.of(0, BYTE),
                     DataSize.of(0, BYTE),
                     DataSize.of(0, BYTE),
                     Optional.empty(),
@@ -230,6 +233,12 @@ public class TestingRemoteTaskFactory
         public synchronized void setOutputBuffers(OutputBuffers outputBuffers)
         {
             this.outputBuffers = outputBuffers;
+        }
+
+        @Override
+        public void setSpeculative(boolean speculative)
+        {
+           // ignore
         }
 
         public synchronized OutputBuffers getOutputBuffers()
@@ -314,7 +323,7 @@ public class TestingRemoteTaskFactory
         }
 
         @Override
-        public SpoolingOutputStats.Snapshot retrieveAndDropSpoolingOutputStats()
+        public Optional<SpoolingOutputStats.Snapshot> retrieveAndDropSpoolingOutputStats()
         {
             throw new UnsupportedOperationException();
         }

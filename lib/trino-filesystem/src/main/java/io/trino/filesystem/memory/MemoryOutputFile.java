@@ -14,6 +14,7 @@
 package io.trino.filesystem.memory;
 
 import io.airlift.slice.Slice;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoOutputFile;
 import io.trino.memory.context.AggregatedMemoryContext;
 
@@ -21,6 +22,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.FileAlreadyExistsException;
 
+import static io.airlift.slice.Slices.wrappedBuffer;
 import static java.util.Objects.requireNonNull;
 
 class MemoryOutputFile
@@ -36,10 +38,10 @@ class MemoryOutputFile
         void overwriteBlob(Slice data);
     }
 
-    private final String location;
+    private final Location location;
     private final OutputBlob outputBlob;
 
-    public MemoryOutputFile(String location, OutputBlob outputBlob)
+    public MemoryOutputFile(Location location, OutputBlob outputBlob)
     {
         this.location = requireNonNull(location, "location is null");
         this.outputBlob = requireNonNull(outputBlob, "outputBlob is null");
@@ -50,21 +52,34 @@ class MemoryOutputFile
             throws IOException
     {
         if (outputBlob.exists()) {
-            throw new FileAlreadyExistsException(location);
+            throw new FileAlreadyExistsException(toString());
         }
         return new MemoryOutputStream(location, outputBlob::createBlob);
     }
 
     @Override
-    public OutputStream createOrOverwrite(AggregatedMemoryContext memoryContext)
+    public void createOrOverwrite(byte[] data)
             throws IOException
     {
-        return new MemoryOutputStream(location, outputBlob::overwriteBlob);
+        outputBlob.overwriteBlob(wrappedBuffer(data));
     }
 
     @Override
-    public String location()
+    public void createExclusive(byte[] data)
+            throws IOException
+    {
+        outputBlob.createBlob(wrappedBuffer(data));
+    }
+
+    @Override
+    public Location location()
     {
         return location;
+    }
+
+    @Override
+    public String toString()
+    {
+        return location.toString();
     }
 }

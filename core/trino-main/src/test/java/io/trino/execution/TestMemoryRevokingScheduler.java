@@ -16,14 +16,19 @@ package io.trino.execution;
 
 import com.google.common.base.Ticker;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.stats.CounterStat;
 import io.airlift.stats.TestingGcMonitor;
+import io.airlift.tracing.Tracing;
 import io.airlift.units.DataSize;
+import io.opentelemetry.api.OpenTelemetry;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.buffer.PipelinedOutputBuffers;
 import io.trino.execution.executor.TaskExecutor;
+import io.trino.execution.executor.timesharing.TimeSharingTaskExecutor;
 import io.trino.memory.MemoryPool;
 import io.trino.memory.QueryContext;
 import io.trino.memory.context.LocalMemoryContext;
@@ -35,9 +40,10 @@ import io.trino.spi.QueryId;
 import io.trino.spiller.SpillSpaceTracker;
 import io.trino.sql.planner.LocalExecutionPlanner;
 import io.trino.sql.planner.plan.PlanNodeId;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.net.URI;
 import java.util.Collection;
@@ -61,11 +67,10 @@ import static io.trino.execution.TestSqlTask.OUT;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.PARTITIONED;
 import static java.util.Collections.singletonList;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
 
-@Test(singleThreaded = true)
+@TestInstance(PER_METHOD)
 public class TestMemoryRevokingScheduler
 {
     private final AtomicInteger idGenerator = new AtomicInteger();
@@ -80,12 +85,12 @@ public class TestMemoryRevokingScheduler
 
     private Set<OperatorContext> allOperatorContexts;
 
-    @BeforeMethod
+    @BeforeEach
     public void setUp()
     {
         memoryPool = new MemoryPool(DataSize.ofBytes(10));
 
-        taskExecutor = new TaskExecutor(8, 16, 3, 4, Ticker.systemTicker());
+        taskExecutor = new TimeSharingTaskExecutor(8, 16, 3, 4, Ticker.systemTicker());
         taskExecutor.start();
 
         // Must be single threaded
@@ -105,7 +110,7 @@ public class TestMemoryRevokingScheduler
         allOperatorContexts = null;
     }
 
-    @AfterMethod(alwaysRun = true)
+    @AfterEach
     public void tearDown()
     {
         queryContexts.clear();
@@ -149,7 +154,7 @@ public class TestMemoryRevokingScheduler
         assertMemoryRevokingNotRequested();
 
         requestMemoryRevoking(scheduler);
-        assertEquals(10, memoryPool.getFreeBytes());
+        assertThat(10).isEqualTo(memoryPool.getFreeBytes());
         assertMemoryRevokingNotRequested();
 
         LocalMemoryContext revocableMemory1 = operatorContext1.localRevocableMemoryContext();
@@ -159,13 +164,13 @@ public class TestMemoryRevokingScheduler
 
         revocableMemory1.setBytes(3);
         revocableMemory3.setBytes(6);
-        assertEquals(1, memoryPool.getFreeBytes());
+        assertThat(1).isEqualTo(memoryPool.getFreeBytes());
         requestMemoryRevoking(scheduler);
         // we are still good - no revoking needed
         assertMemoryRevokingNotRequested();
 
         revocableMemory4.setBytes(7);
-        assertEquals(-6, memoryPool.getFreeBytes());
+        assertThat(-6).isEqualTo(memoryPool.getFreeBytes());
         requestMemoryRevoking(scheduler);
         // we need to revoke 3 and 6
         assertMemoryRevokingRequestedFor(operatorContext1, operatorContext3);
@@ -179,18 +184,18 @@ public class TestMemoryRevokingScheduler
         operatorContext1.resetMemoryRevokingRequested();
         requestMemoryRevoking(scheduler);
         assertMemoryRevokingRequestedFor(operatorContext3);
-        assertEquals(-3, memoryPool.getFreeBytes());
+        assertThat(-3).isEqualTo(memoryPool.getFreeBytes());
 
         // and allocate some more
         revocableMemory5.setBytes(3);
-        assertEquals(-6, memoryPool.getFreeBytes());
+        assertThat(-6).isEqualTo(memoryPool.getFreeBytes());
         requestMemoryRevoking(scheduler);
         // we are still good with just OC3 in process of revoking
         assertMemoryRevokingRequestedFor(operatorContext3);
 
         // and allocate some more
         revocableMemory5.setBytes(4);
-        assertEquals(-7, memoryPool.getFreeBytes());
+        assertThat(-7).isEqualTo(memoryPool.getFreeBytes());
         requestMemoryRevoking(scheduler);
         // no we have to trigger revoking for OC4
         assertMemoryRevokingRequestedFor(operatorContext3, operatorContext4);
@@ -247,9 +252,13 @@ public class TestMemoryRevokingScheduler
     {
         ImmutableSet<OperatorContext> operatorContextsSet = ImmutableSet.copyOf(operatorContexts);
         operatorContextsSet.forEach(
-                operatorContext -> assertTrue(operatorContext.isMemoryRevokingRequested(), "expected memory requested for operator " + operatorContext.getOperatorId()));
+                operatorContext -> assertThat(operatorContext.isMemoryRevokingRequested())
+                        .describedAs("expected memory requested for operator " + operatorContext.getOperatorId())
+                        .isTrue());
         Sets.difference(allOperatorContexts, operatorContextsSet).forEach(
-                operatorContext -> assertFalse(operatorContext.isMemoryRevokingRequested(), "expected memory  not requested for operator " + operatorContext.getOperatorId()));
+                operatorContext -> assertThat(operatorContext.isMemoryRevokingRequested())
+                        .describedAs("expected memory  not requested for operator " + operatorContext.getOperatorId())
+                        .isFalse());
     }
 
     private void assertMemoryRevokingNotRequested()
@@ -275,7 +284,7 @@ public class TestMemoryRevokingScheduler
                 sqlTask -> {},
                 DataSize.of(32, MEGABYTE),
                 DataSize.of(200, MEGABYTE),
-                new ExchangeManagerRegistry(),
+                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer(), new SecretsResolver(ImmutableMap.of())),
                 new CounterStat());
     }
 
@@ -286,6 +295,7 @@ public class TestMemoryRevokingScheduler
                 memoryPool,
                 new TestingGcMonitor(),
                 executor,
+                scheduledExecutor,
                 scheduledExecutor,
                 DataSize.of(1, GIGABYTE),
                 spillSpaceTracker));

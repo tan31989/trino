@@ -52,7 +52,6 @@ import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static org.apache.hadoop.fs.FileSystem.getFileSystemClass;
-import static org.apache.hadoop.security.UserGroupInformationShim.getSubject;
 
 public class TrinoFileSystemCache
         implements FileSystemCache
@@ -61,7 +60,7 @@ public class TrinoFileSystemCache
 
     public static final String CACHE_KEY = "fs.cache.credentials";
 
-    public static final TrinoFileSystemCache INSTANCE = new TrinoFileSystemCache();
+    static final TrinoFileSystemCache INSTANCE = new TrinoFileSystemCache();
 
     private final AtomicLong unique = new AtomicLong();
 
@@ -105,6 +104,11 @@ public class TrinoFileSystemCache
         return cache.size();
     }
 
+    TrinoFileSystemCacheStats getStats()
+    {
+        return stats;
+    }
+
     private FileSystem getInternal(URI uri, Configuration conf, long unique)
             throws IOException
     {
@@ -117,6 +121,7 @@ public class TrinoFileSystemCache
         try {
             fileSystemHolder = cache.compute(key, (k, currentFileSystemHolder) -> {
                 if (currentFileSystemHolder == null) {
+                    // ConcurrentHashMap.compute guarantees that remapping function is invoked at most once, so cacheSize remains eventually consistent with cache.size()
                     if (cacheSize.getAndUpdate(currentSize -> Math.min(currentSize + 1, maxSize)) >= maxSize) {
                         throw new RuntimeException(
                                 new IOException(format("FileSystem max cache size has been reached: %s", maxSize)));
@@ -248,7 +253,7 @@ public class TrinoFileSystemCache
         AuthenticationMethod authenticationMethod = userGroupInformation.getAuthenticationMethod();
         return switch (authenticationMethod) {
             case SIMPLE -> ImmutableSet.of();
-            case KERBEROS -> ImmutableSet.copyOf(getSubject(userGroupInformation).getPrivateCredentials());
+            case KERBEROS -> ImmutableSet.copyOf(userGroupInformation.getSubject().getPrivateCredentials());
             case PROXY -> getPrivateCredentials(userGroupInformation.getRealUser());
             default -> throw new IllegalArgumentException("Unsupported authentication method: " + authenticationMethod);
         };
@@ -260,7 +265,6 @@ public class TrinoFileSystemCache
         return "hdfs".equals(scheme) || "viewfs".equals(scheme);
     }
 
-    @SuppressWarnings("unused")
     private record FileSystemKey(String scheme, String authority, long unique, String realUser, String proxyUser)
     {
         private FileSystemKey
@@ -387,7 +391,7 @@ public class TrinoFileSystemCache
         public RemoteIterator<LocatedFileStatus> listFiles(Path path, boolean recursive)
                 throws IOException
         {
-            return fs.listFiles(path, recursive);
+            return new RemoteIteratorWrapper(fs.listFiles(path, recursive), this);
         }
     }
 
@@ -395,12 +399,15 @@ public class TrinoFileSystemCache
             extends FSDataOutputStream
     {
         @SuppressWarnings({"FieldCanBeLocal", "unused"})
-        private final FileSystem fileSystem;
+        // Keep reference to FileSystemWrapper which owns the FSDataOutputStream.
+        // Otherwise, GC on FileSystemWrapper could trigger finalizer that closes wrapped FileSystem object and that would break
+        // FSDataOutputStream delegate.
+        private final FileSystemWrapper owningFileSystemWrapper;
 
-        public OutputStreamWrapper(FSDataOutputStream delegate, FileSystem fileSystem)
+        public OutputStreamWrapper(FSDataOutputStream delegate, FileSystemWrapper owningFileSystemWrapper)
         {
             super(delegate, null, delegate.getPos());
-            this.fileSystem = fileSystem;
+            this.owningFileSystemWrapper = requireNonNull(owningFileSystemWrapper, "owningFileSystemWrapper is null");
         }
 
         @Override
@@ -414,12 +421,15 @@ public class TrinoFileSystemCache
             extends FSDataInputStream
     {
         @SuppressWarnings({"FieldCanBeLocal", "unused"})
-        private final FileSystem fileSystem;
+        // Keep reference to FileSystemWrapper which owns the FSDataInputStream.
+        // Otherwise, GC on FileSystemWrapper could trigger finalizer that closes wrapped FileSystem object and that would break
+        // FSDataInputStream delegate.
+        private final FileSystemWrapper owningFileSystemWrapper;
 
-        public InputStreamWrapper(FSDataInputStream inputStream, FileSystem fileSystem)
+        public InputStreamWrapper(FSDataInputStream inputStream, FileSystemWrapper owningFileSystemWrapper)
         {
             super(inputStream);
-            this.fileSystem = fileSystem;
+            this.owningFileSystemWrapper = requireNonNull(owningFileSystemWrapper, "owningFileSystemWrapper is null");
         }
 
         @Override
@@ -429,8 +439,34 @@ public class TrinoFileSystemCache
         }
     }
 
-    public TrinoFileSystemCacheStats getFileSystemCacheStats()
+    private static class RemoteIteratorWrapper
+            implements RemoteIterator<LocatedFileStatus>
     {
-        return stats;
+        private final RemoteIterator<LocatedFileStatus> delegate;
+        @SuppressWarnings({"FieldCanBeLocal", "unused"})
+        // Keep reference to FileSystemWrapper which owns the RemoteIterator.
+        // Otherwise, GC on FileSystemWrapper could trigger finalizer that closes wrapped FileSystem object and that would break
+        // RemoteIterator delegate.
+        private final FileSystemWrapper owningFileSystemWrapper;
+
+        public RemoteIteratorWrapper(RemoteIterator<LocatedFileStatus> delegate, FileSystemWrapper owningFileSystemWrapper)
+        {
+            this.delegate = delegate;
+            this.owningFileSystemWrapper = requireNonNull(owningFileSystemWrapper, "owningFileSystemWrapper is null");
+        }
+
+        @Override
+        public boolean hasNext()
+                throws IOException
+        {
+            return delegate.hasNext();
+        }
+
+        @Override
+        public LocatedFileStatus next()
+                throws IOException
+        {
+            return delegate.next();
+        }
     }
 }

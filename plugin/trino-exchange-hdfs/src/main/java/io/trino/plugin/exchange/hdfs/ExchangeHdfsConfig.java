@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.exchange.hdfs;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
@@ -21,8 +20,7 @@ import io.airlift.configuration.validation.FileExists;
 import io.airlift.units.DataSize;
 import io.airlift.units.MaxDataSize;
 import io.airlift.units.MinDataSize;
-
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotNull;
 
 import java.io.File;
 import java.util.List;
@@ -33,6 +31,7 @@ import static io.airlift.units.DataSize.Unit.MEGABYTE;
 public class ExchangeHdfsConfig
 {
     private DataSize hdfsStorageBlockSize = DataSize.of(4, MEGABYTE);
+    private boolean skipDirectorySchemeValidation;
     private List<File> resourceConfigFiles = ImmutableList.of();
 
     @NotNull
@@ -51,6 +50,19 @@ public class ExchangeHdfsConfig
         return this;
     }
 
+    public boolean isSkipDirectorySchemeValidation()
+    {
+        return skipDirectorySchemeValidation;
+    }
+
+    @Config("exchange.hdfs.skip-directory-scheme-validation")
+    @ConfigDescription("Skip directory scheme validation to support hadoop compatible file system")
+    public ExchangeHdfsConfig setSkipDirectorySchemeValidation(boolean skipDirectorySchemeValidation)
+    {
+        this.skipDirectorySchemeValidation = skipDirectorySchemeValidation;
+        return this;
+    }
+
     @NotNull
     public List<@FileExists File> getResourceConfigFiles()
     {
@@ -58,9 +70,9 @@ public class ExchangeHdfsConfig
     }
 
     @Config("hdfs.config.resources")
-    public ExchangeHdfsConfig setResourceConfigFiles(String files)
+    public ExchangeHdfsConfig setResourceConfigFiles(List<String> files)
     {
-        this.resourceConfigFiles = Splitter.on(',').trimResults().omitEmptyStrings().splitToList(files).stream()
+        this.resourceConfigFiles = files.stream()
                 .map(File::new)
                 .collect(toImmutableList());
         return this;

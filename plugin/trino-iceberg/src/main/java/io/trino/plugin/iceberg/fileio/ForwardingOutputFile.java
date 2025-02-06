@@ -14,6 +14,7 @@
 package io.trino.plugin.iceberg.fileio;
 
 import com.google.common.io.CountingOutputStream;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoOutputFile;
 import org.apache.iceberg.io.InputFile;
@@ -32,10 +33,10 @@ public class ForwardingOutputFile
     private final TrinoFileSystem fileSystem;
     private final TrinoOutputFile outputFile;
 
-    public ForwardingOutputFile(TrinoFileSystem fileSystem, String path)
+    public ForwardingOutputFile(TrinoFileSystem fileSystem, Location location)
     {
         this.fileSystem = requireNonNull(fileSystem, "fileSystem is null");
-        this.outputFile = fileSystem.newOutputFile(path);
+        this.outputFile = fileSystem.newOutputFile(location);
     }
 
     @Override
@@ -53,19 +54,14 @@ public class ForwardingOutputFile
     @Override
     public PositionOutputStream createOrOverwrite()
     {
-        try {
-            // Callers of this method don't have access to memory context, so we skip tracking memory here
-            return new CountingPositionOutputStream(outputFile.createOrOverwrite());
-        }
-        catch (IOException e) {
-            throw new UncheckedIOException("Failed to create file: " + location(), e);
-        }
+        // Iceberg never overwrites existing files. All callers use unique names.
+        return create();
     }
 
     @Override
     public String location()
     {
-        return outputFile.location();
+        return outputFile.location().toString();
     }
 
     @Override

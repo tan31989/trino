@@ -14,6 +14,7 @@
 package io.trino.execution;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.Metadata;
@@ -21,16 +22,17 @@ import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.RedirectionAwareTableHandle;
 import io.trino.metadata.TableHandle;
 import io.trino.security.AccessControl;
+import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.sql.tree.DropColumn;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.Identifier;
 
-import javax.inject.Inject;
-
+import java.util.Iterator;
 import java.util.List;
 
 import static com.google.common.base.Verify.verifyNotNull;
@@ -73,18 +75,18 @@ public class DropColumnTask
         Session session = stateMachine.getSession();
         QualifiedObjectName tableName = createQualifiedObjectName(session, statement, statement.getTable());
         RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, tableName);
-        if (redirectionAwareTableHandle.getTableHandle().isEmpty()) {
+        if (redirectionAwareTableHandle.tableHandle().isEmpty()) {
             if (!statement.isTableExists()) {
                 throw semanticException(TABLE_NOT_FOUND, statement, "Table '%s' does not exist", tableName);
             }
             return immediateVoidFuture();
         }
-        TableHandle tableHandle = redirectionAwareTableHandle.getTableHandle().get();
+        TableHandle tableHandle = redirectionAwareTableHandle.tableHandle().get();
 
         // Use getParts method because the column name should be lowercase
         String column = statement.getField().getParts().get(0);
 
-        QualifiedObjectName qualifiedTableName = redirectionAwareTableHandle.getRedirectedTableName().orElse(tableName);
+        QualifiedObjectName qualifiedTableName = redirectionAwareTableHandle.redirectedTableName().orElse(tableName);
         accessControl.checkCanDropColumn(session.toSecurityContext(), qualifiedTableName);
 
         ColumnHandle columnHandle = metadata.getColumnHandles(session, tableHandle).get(column);
@@ -104,7 +106,7 @@ public class DropColumnTask
             throw semanticException(NOT_SUPPORTED, statement, "Cannot drop hidden column");
         }
         if (fieldPath.isEmpty()) {
-            if (metadata.getTableMetadata(session, tableHandle).getColumns().stream()
+            if (metadata.getTableMetadata(session, tableHandle).columns().stream()
                     .filter(info -> !info.isHidden()).count() <= 1) {
                 throw semanticException(NOT_SUPPORTED, statement, "Cannot drop the only column in a table");
             }
@@ -113,7 +115,19 @@ public class DropColumnTask
         else {
             RowType containingType = null;
             Type currentType = columnMetadata.getType();
-            for (String fieldName : fieldPath) {
+            Iterator<String> fieldIterator = fieldPath.iterator();
+            while (fieldIterator.hasNext()) {
+                String fieldName = fieldIterator.next();
+                if (currentType instanceof ArrayType arrayType) {
+                    if (!fieldName.equals("element")) {
+                        throw new TrinoException(NOT_SUPPORTED, "ARRAY type should be denoted by 'element' in the path; found '%s'".formatted(fieldName));
+                    }
+                    currentType = arrayType.getElementType();
+                    if (!fieldIterator.hasNext()) {
+                        throw semanticException(COLUMN_NOT_FOUND, statement, "Field path %s does not point to row field", fieldPath);
+                    }
+                    continue;
+                }
                 if (currentType instanceof RowType rowType) {
                     List<RowType.Field> candidates = rowType.getFields().stream()
                             // case-sensitive match
@@ -128,12 +142,12 @@ public class DropColumnTask
                         currentType = rowField.getType();
                         continue;
                     }
-                    if (statement.isColumnExists() && candidates.size() == 0) {
+                    if (statement.isColumnExists() && candidates.isEmpty()) {
                         // TODO should we allow only the leaf not to exist, or any path component?
                         return immediateVoidFuture();
                     }
                 }
-                // TODO: Support array and map types
+                // TODO: Support map types
                 throw semanticException(
                         NOT_SUPPORTED,
                         statement,

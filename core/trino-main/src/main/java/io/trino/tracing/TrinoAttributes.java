@@ -44,6 +44,7 @@ public final class TrinoAttributes
     public static final AttributeKey<String> PROCEDURE = stringKey("trino.procedure");
     public static final AttributeKey<String> FUNCTION = stringKey("trino.function");
     public static final AttributeKey<String> HANDLE = stringKey("trino.handle");
+    public static final AttributeKey<Boolean> CASCADE = booleanKey("trino.cascade");
 
     public static final AttributeKey<String> OPTIMIZER_NAME = stringKey("trino.optimizer");
     public static final AttributeKey<List<String>> OPTIMIZER_RULES = stringArrayKey("trino.optimizer.rules");
@@ -54,7 +55,13 @@ public final class TrinoAttributes
     public static final AttributeKey<Long> SPLIT_SCHEDULED_TIME_NANOS = longKey("trino.split.scheduled_time_nanos");
     public static final AttributeKey<Long> SPLIT_CPU_TIME_NANOS = longKey("trino.split.cpu_time_nanos");
     public static final AttributeKey<Long> SPLIT_WAIT_TIME_NANOS = longKey("trino.split.wait_time_nanos");
+    public static final AttributeKey<Long> SPLIT_START_TIME_NANOS = longKey("trino.split.start_time_nanos");
+    public static final AttributeKey<Long> SPLIT_BLOCK_TIME_NANOS = longKey("trino.split.block_time_nanos");
     public static final AttributeKey<Boolean> SPLIT_BLOCKED = booleanKey("trino.split.blocked");
 
     public static final AttributeKey<String> EVENT_STATE = stringKey("state");
+
+    public static final AttributeKey<String> FAILURE_MESSAGE = stringKey("failure");
+    public static final AttributeKey<String> PRIVILEGE_GRANT = stringKey("grant");
+    public static final AttributeKey<String> ENTITY = stringKey("entity");
 }

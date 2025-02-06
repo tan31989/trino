@@ -14,6 +14,7 @@
 package io.trino.filesystem.local;
 
 import io.trino.filesystem.AbstractTestTrinoFileSystem;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -44,6 +45,12 @@ public class TestLocalFileSystem
     {
         tempDirectory = Files.createTempDirectory("test");
         fileSystem = new LocalFileSystem(tempDirectory);
+    }
+
+    @Override
+    protected boolean supportsCreateExclusive()
+    {
+        return false;
     }
 
     @AfterEach
@@ -82,15 +89,21 @@ public class TestLocalFileSystem
     }
 
     @Override
+    protected boolean supportsIncompleteWriteNoClobber()
+    {
+        return false;
+    }
+
+    @Override
     protected TrinoFileSystem getFileSystem()
     {
         return fileSystem;
     }
 
     @Override
-    protected String getRootLocation()
+    protected Location getRootLocation()
     {
-        return "local://";
+        return Location.of("local://");
     }
 
     @Override
@@ -111,24 +124,24 @@ public class TestLocalFileSystem
     {
         assertThatThrownBy(() -> getFileSystem().newInputFile(createLocation("../file")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(createLocation("../file"));
+                .hasMessageContaining(createLocation("../file").toString());
         assertThatThrownBy(() -> getFileSystem().newInputFile(createLocation("../file"), 22))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(createLocation("../file"));
+                .hasMessageContaining(createLocation("../file").toString());
         assertThatThrownBy(() -> getFileSystem().newOutputFile(createLocation("../file")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(createLocation("../file"));
+                .hasMessageContaining(createLocation("../file").toString());
         assertThatThrownBy(() -> getFileSystem().deleteFile(createLocation("../file")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(createLocation("../file"));
+                .hasMessageContaining(createLocation("../file").toString());
         assertThatThrownBy(() -> getFileSystem().listFiles(createLocation("../file")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(createLocation("../file"));
+                .hasMessageContaining(createLocation("../file").toString());
         assertThatThrownBy(() -> getFileSystem().renameFile(createLocation("../file"), createLocation("target")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(createLocation("../file"));
+                .hasMessageContaining(createLocation("../file").toString());
         assertThatThrownBy(() -> getFileSystem().renameFile(createLocation("source"), createLocation("../file")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(createLocation("../file"));
+                .hasMessageContaining(createLocation("../file").toString());
     }
 }

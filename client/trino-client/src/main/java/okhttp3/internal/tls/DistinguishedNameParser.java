@@ -164,7 +164,7 @@ final class DistinguishedNameParser
                 break;
             }
             else if (chars[pos] >= 'A' && chars[pos] <= 'F') {
-                chars[pos] += 32; //to low case
+                chars[pos] += (char) 32; // to low case
             }
 
             pos++;
@@ -175,12 +175,6 @@ final class DistinguishedNameParser
         int hexLen = end - beg; // skip first '#' char
         if (hexLen < 5 || (hexLen & 1) == 0) {
             throw new IllegalStateException("Unexpected end of DN: " + dn);
-        }
-
-        // get byte encoding from string representation
-        byte[] encoded = new byte[hexLen / 2];
-        for (int i = 0, p = beg + 1; i < encoded.length; p += 2, i++) {
-            encoded[i] = (byte) getByte(p);
         }
 
         return new String(chars, beg, hexLen);

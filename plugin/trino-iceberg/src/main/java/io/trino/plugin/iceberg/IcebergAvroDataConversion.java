@@ -17,8 +17,13 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slices;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
+import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.MapBlockBuilder;
+import io.trino.spi.block.RowBlockBuilder;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
@@ -28,12 +33,11 @@ import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
+import jakarta.annotation.Nullable;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.types.Types;
-
-import javax.annotation.Nullable;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -192,7 +196,7 @@ public final class IcebergAvroDataConversion
             Type elementType = arrayType.getElementType();
             org.apache.iceberg.types.Type elementIcebergType = icebergType.asListType().elementType();
 
-            Block arrayBlock = block.getObject(position, Block.class);
+            Block arrayBlock = arrayType.getObject(block, position);
 
             List<Object> list = new ArrayList<>(arrayBlock.getPositionCount());
             for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
@@ -208,26 +212,31 @@ public final class IcebergAvroDataConversion
             org.apache.iceberg.types.Type keyIcebergType = icebergType.asMapType().keyType();
             org.apache.iceberg.types.Type valueIcebergType = icebergType.asMapType().valueType();
 
-            Block mapBlock = block.getObject(position, Block.class);
+            SqlMap sqlMap = mapType.getObject(block, position);
+            int rawOffset = sqlMap.getRawOffset();
+            Block rawKeyBlock = sqlMap.getRawKeyBlock();
+            Block rawValueBlock = sqlMap.getRawValueBlock();
+
             Map<Object, Object> map = new HashMap<>();
-            for (int i = 0; i < mapBlock.getPositionCount(); i += 2) {
-                Object key = toIcebergAvroObject(keyType, keyIcebergType, mapBlock, i);
-                Object value = toIcebergAvroObject(valueType, valueIcebergType, mapBlock, i + 1);
+            for (int i = 0; i < sqlMap.getSize(); i++) {
+                Object key = toIcebergAvroObject(keyType, keyIcebergType, rawKeyBlock, rawOffset + i);
+                Object value = toIcebergAvroObject(valueType, valueIcebergType, rawValueBlock, rawOffset + i);
                 map.put(key, value);
             }
 
             return Collections.unmodifiableMap(map);
         }
         if (type instanceof RowType rowType) {
-            Block rowBlock = block.getObject(position, Block.class);
+            SqlRow sqlRow = rowType.getObject(block, position);
 
             List<Type> fieldTypes = rowType.getTypeParameters();
-            checkArgument(fieldTypes.size() == rowBlock.getPositionCount(), "Expected row value field count does not match type field count");
+            checkArgument(fieldTypes.size() == sqlRow.getFieldCount(), "Expected row value field count does not match type field count");
             List<Types.NestedField> icebergFields = icebergType.asStructType().fields();
 
+            int rawIndex = sqlRow.getRawIndex();
             Record record = GenericRecord.create(icebergType.asStructType());
-            for (int i = 0; i < rowBlock.getPositionCount(); i++) {
-                Object element = toIcebergAvroObject(fieldTypes.get(i), icebergFields.get(i).type(), rowBlock, i);
+            for (int i = 0; i < sqlRow.getFieldCount(); i++) {
+                Object element = toIcebergAvroObject(fieldTypes.get(i), icebergFields.get(i).type(), sqlRow.getRawFieldBlock(i), rawIndex);
                 record.set(i, element);
             }
 
@@ -281,7 +290,7 @@ public final class IcebergAvroDataConversion
             if (icebergType.typeId().equals(FIXED)) {
                 VARBINARY.writeSlice(builder, Slices.wrappedBuffer((byte[]) object));
             }
-            VARBINARY.writeSlice(builder, Slices.wrappedBuffer((ByteBuffer) object));
+            VARBINARY.writeSlice(builder, Slices.wrappedHeapBuffer((ByteBuffer) object));
             return;
         }
         if (type.equals(DATE)) {
@@ -310,11 +319,11 @@ public final class IcebergAvroDataConversion
             Collection<?> array = (Collection<?>) object;
             Type elementType = ((ArrayType) type).getElementType();
             org.apache.iceberg.types.Type elementIcebergType = icebergType.asListType().elementType();
-            BlockBuilder currentBuilder = builder.beginBlockEntry();
-            for (Object element : array) {
-                serializeToTrinoBlock(elementType, elementIcebergType, currentBuilder, element);
-            }
-            builder.closeEntry();
+            ((ArrayBlockBuilder) builder).buildEntry(elementBuilder -> {
+                for (Object element : array) {
+                    serializeToTrinoBlock(elementType, elementIcebergType, elementBuilder, element);
+                }
+            });
             return;
         }
         if (type instanceof MapType) {
@@ -323,23 +332,23 @@ public final class IcebergAvroDataConversion
             Type valueType = ((MapType) type).getValueType();
             org.apache.iceberg.types.Type keyIcebergType = icebergType.asMapType().keyType();
             org.apache.iceberg.types.Type valueIcebergType = icebergType.asMapType().valueType();
-            BlockBuilder currentBuilder = builder.beginBlockEntry();
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                serializeToTrinoBlock(keyType, keyIcebergType, currentBuilder, entry.getKey());
-                serializeToTrinoBlock(valueType, valueIcebergType, currentBuilder, entry.getValue());
-            }
-            builder.closeEntry();
+            ((MapBlockBuilder) builder).buildEntry((keyBuilder, valueBuilder) -> {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    serializeToTrinoBlock(keyType, keyIcebergType, keyBuilder, entry.getKey());
+                    serializeToTrinoBlock(valueType, valueIcebergType, valueBuilder, entry.getValue());
+                }
+            });
             return;
         }
         if (type instanceof RowType) {
             Record record = (Record) object;
             List<Type> typeParameters = type.getTypeParameters();
             List<Types.NestedField> icebergFields = icebergType.asStructType().fields();
-            BlockBuilder currentBuilder = builder.beginBlockEntry();
-            for (int i = 0; i < typeParameters.size(); i++) {
-                serializeToTrinoBlock(typeParameters.get(i), icebergFields.get(i).type(), currentBuilder, record.get(i));
-            }
-            builder.closeEntry();
+            ((RowBlockBuilder) builder).buildEntry(fieldBuilders -> {
+                for (int i = 0; i < typeParameters.size(); i++) {
+                    serializeToTrinoBlock(typeParameters.get(i), icebergFields.get(i).type(), fieldBuilders.get(i), record.get(i));
+                }
+            });
             return;
         }
         throw new TrinoException(NOT_SUPPORTED, "unsupported type: " + type);

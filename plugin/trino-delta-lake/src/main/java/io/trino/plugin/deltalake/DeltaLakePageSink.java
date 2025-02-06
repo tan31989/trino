@@ -14,6 +14,7 @@
 package io.trino.plugin.deltalake;
 
 import io.airlift.json.JsonCodec;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.connector.ConnectorSession;
@@ -34,10 +35,11 @@ public class DeltaLakePageSink
             TrinoFileSystemFactory fileSystemFactory,
             int maxOpenWriters,
             JsonCodec<DataFileInfo> dataFileInfoCodec,
-            String tableLocation,
+            Location tableLocation,
             ConnectorSession session,
             DeltaLakeWriterStats stats,
-            String trinoVersion)
+            String trinoVersion,
+            DeltaLakeParquetSchemaMapping parquetSchemaMapping)
     {
         super(
                 typeOperators,
@@ -51,13 +53,14 @@ public class DeltaLakePageSink
                 tableLocation,
                 session,
                 stats,
-                trinoVersion);
+                trinoVersion,
+                parquetSchemaMapping);
     }
 
     @Override
     protected void processSynthesizedColumn(DeltaLakeColumnHandle column)
     {
-        throw new IllegalStateException("Unexpected column type: " + column.getColumnType());
+        throw new IllegalStateException("Unexpected column type: " + column.columnType());
     }
 
     @Override

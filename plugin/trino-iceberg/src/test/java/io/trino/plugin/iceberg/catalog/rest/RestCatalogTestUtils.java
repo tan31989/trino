@@ -42,6 +42,7 @@ public final class RestCatalogTestUtils
         properties.put(CatalogProperties.URI, "jdbc:h2:file:" + Files.newTemporaryFile().getAbsolutePath());
         properties.put(JdbcCatalog.PROPERTY_PREFIX + "username", "user");
         properties.put(JdbcCatalog.PROPERTY_PREFIX + "password", "password");
+        properties.put(JdbcCatalog.PROPERTY_PREFIX + "schema-version", "V1");
         properties.put(CatalogProperties.WAREHOUSE_LOCATION, warehouseLocation.toPath().resolve("iceberg_data").toFile().getAbsolutePath());
 
         ConnectorSession connectorSession = TestingConnectorSession.builder().build();
@@ -51,7 +52,7 @@ public final class RestCatalogTestUtils
         HdfsContext context = new HdfsContext(connectorSession);
 
         JdbcCatalog catalog = new JdbcCatalog();
-        catalog.setConf((Object) hdfsEnvironment.getConfiguration(context, new Path(warehouseLocation.getAbsolutePath())));
+        catalog.setConf(hdfsEnvironment.getConfiguration(context, new Path(warehouseLocation.getAbsolutePath())));
         catalog.initialize("backend_jdbc", properties.buildOrThrow());
 
         return catalog;

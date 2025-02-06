@@ -13,6 +13,7 @@
  */
 package io.trino.sql.rewrite;
 
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.execution.QueryPreparer;
 import io.trino.execution.QueryPreparer.PreparedQuery;
@@ -32,8 +33,6 @@ import io.trino.sql.tree.Node;
 import io.trino.sql.tree.NodeRef;
 import io.trino.sql.tree.Parameter;
 import io.trino.sql.tree.Statement;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
@@ -99,7 +98,7 @@ public final class ExplainRewrite
         protected Node visitExplainAnalyze(ExplainAnalyze node, Void context)
         {
             Statement statement = (Statement) process(node.getStatement(), context);
-            return new ExplainAnalyze(node.getLocation(), statement, node.isVerbose());
+            return new ExplainAnalyze(node.getLocation().orElseThrow(), statement, node.isVerbose());
         }
 
         @Override
@@ -140,20 +139,11 @@ public final class ExplainRewrite
                 return singleValueQuery("Valid", true);
             }
 
-            String plan;
-            switch (planFormat) {
-                case GRAPHVIZ:
-                    plan = queryExplainer.getGraphvizPlan(session, preparedQuery.getStatement(), planType, preparedQuery.getParameters(), warningCollector, planOptimizersStatsCollector);
-                    break;
-                case JSON:
-                    plan = queryExplainer.getJsonPlan(session, preparedQuery.getStatement(), planType, preparedQuery.getParameters(), warningCollector, planOptimizersStatsCollector);
-                    break;
-                case TEXT:
-                    plan = queryExplainer.getPlan(session, preparedQuery.getStatement(), planType, preparedQuery.getParameters(), warningCollector, planOptimizersStatsCollector);
-                    break;
-                default:
-                    throw new IllegalArgumentException("Invalid Explain Format: " + planFormat);
-            }
+            String plan = switch (planFormat) {
+                case GRAPHVIZ -> queryExplainer.getGraphvizPlan(session, preparedQuery.getStatement(), planType, preparedQuery.getParameters(), warningCollector, planOptimizersStatsCollector);
+                case JSON -> queryExplainer.getJsonPlan(session, preparedQuery.getStatement(), planType, preparedQuery.getParameters(), warningCollector, planOptimizersStatsCollector);
+                case TEXT -> queryExplainer.getPlan(session, preparedQuery.getStatement(), planType, preparedQuery.getParameters(), warningCollector, planOptimizersStatsCollector);
+            };
             return singleValueQuery("Query Plan", plan);
         }
 

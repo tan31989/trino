@@ -24,14 +24,22 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
-import org.intellij.lang.annotations.Language;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.TableName;
+import org.apache.hadoop.hbase.client.Get;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.Table;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -41,9 +49,9 @@ import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.DOMAIN_COMPACTION_THRESHOLD;
+import static io.trino.plugin.jdbc.JdbcWriteSessionProperties.NON_TRANSACTIONAL_MERGE;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
-import static io.trino.plugin.phoenix5.PhoenixQueryRunner.createPhoenixQueryRunner;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.limit;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.output;
@@ -64,7 +72,7 @@ import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestPhoenixConnectorTest
         extends BaseJdbcConnectorTest
@@ -76,60 +84,52 @@ public class TestPhoenixConnectorTest
             throws Exception
     {
         testingPhoenixServer = closeAfterClass(TestingPhoenixServer.getInstance()).get();
-        return createPhoenixQueryRunner(testingPhoenixServer, ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return PhoenixQueryRunner.builder(testingPhoenixServer)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_LIMIT_PUSHDOWN:
-            case SUPPORTS_TOPN_PUSHDOWN:
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-                return false;
+        return switch (connectorBehavior) {
+            case SUPPORTS_MERGE,
+                 SUPPORTS_PREDICATE_ARITHMETIC_EXPRESSION_PUSHDOWN,
+                 SUPPORTS_ROW_LEVEL_UPDATE,
+                 SUPPORTS_UPDATE -> true;
+            case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                 SUPPORTS_DROP_SCHEMA_CASCADE,
+                 SUPPORTS_LIMIT_PUSHDOWN,
+                 SUPPORTS_MAP_TYPE,
+                 SUPPORTS_NATIVE_QUERY,
+                 SUPPORTS_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_RENAME_COLUMN,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_TRUNCATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
+    }
 
-            case SUPPORTS_PREDICATE_ARITHMETIC_EXPRESSION_PUSHDOWN:
-                return true;
-
-            case SUPPORTS_RENAME_SCHEMA:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_RENAME_TABLE:
-                return false;
-
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-            case SUPPORTS_SET_COLUMN_TYPE:
-                return false;
-
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-                return false;
-
-            case SUPPORTS_NOT_NULL_CONSTRAINT:
-                return false;
-
-            case SUPPORTS_TRUNCATE:
-                return false;
-
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            case SUPPORTS_UPDATE:
-            case SUPPORTS_MERGE:
-                return true;
-
-            case SUPPORTS_NATIVE_QUERY:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+    @Override
+    protected Session getSession()
+    {
+        Session session = super.getSession();
+        return Session.builder(session)
+                .setCatalogSessionProperty(session.getCatalog().orElseThrow(), NON_TRANSACTIONAL_MERGE, "true")
+                .build();
     }
 
     // TODO: wait https://github.com/trinodb/trino/pull/14939 done and then remove this test
+    @Test
     @Override
     public void testArithmeticPredicatePushdown()
     {
@@ -171,15 +171,15 @@ public class TestPhoenixConnectorTest
         // multiplication/division/modulo by zero
         assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey * 0 != 0"))
                 .isFullyPushedDown();
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey / 0 = 0"))
-                .satisfies(this::verifyDivisionByZeroFailure);
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey % 0 = 0"))
-                .satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey / 0 = 0"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey % 0 = 0"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
         // Expression that evaluates to 0 for some rows on RHS of modulus
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) / (regionkey - 1) = 2"))
-                .satisfies(this::verifyDivisionByZeroFailure);
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) % (regionkey - 1) = 2"))
-                .satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) / (regionkey - 1) = 2"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) % (regionkey - 1) = 2"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
 
         // multiplicative/divisive identity
         assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey * 1 = nationkey"))
@@ -226,65 +226,38 @@ public class TestPhoenixConnectorTest
     @Override
     protected TestTable createTableWithDefaultColumns()
     {
-        throw new SkipException("Phoenix connector does not support column default values");
+        return abort("Phoenix connector does not support column default values");
     }
 
     @Override
     protected TestTable createTableWithUnsupportedColumn()
     {
         // Apparently all Phoenix types are supported in the Phoenix connector.
-        throw new SkipException("Cannot find an unsupported data type");
+        return abort("Cannot find an unsupported data type");
     }
 
+    @Test
     @Override
-    public void testRenameColumn()
+    public void testAddAndDropColumnName()
     {
-        assertThatThrownBy(super::testRenameColumn)
-                // TODO (https://github.com/trinodb/trino/issues/7205) support column rename in Phoenix
-                .hasMessageContaining("Syntax error. Encountered \"RENAME\"");
-        throw new SkipException("Rename column is not yet supported by Phoenix connector");
-    }
+        for (String columnName : testColumnNameDataProvider()) {
+            // TODO: Investigate why these two case fail
+            if (columnName.equals("an'apostrophe")) {
+                assertThatThrownBy(() -> testAddAndDropColumnName(columnName, requiresDelimiting(columnName)))
+                        .hasMessageContaining("Syntax error. Mismatched input");
+                continue;
+            }
+            if (columnName.equals("a\\backslash`")) {
+                assertThatThrownBy(() -> testAddAndDropColumnName(columnName, requiresDelimiting(columnName)))
+                        .hasMessageContaining("Undefined column");
+                continue;
+            }
 
-    @Override
-    public void testAlterTableRenameColumnToLongName()
-    {
-        assertThatThrownBy(super::testAlterTableRenameColumnToLongName)
-                // TODO (https://github.com/trinodb/trino/issues/7205) support column rename in Phoenix
-                .hasMessageContaining("Syntax error. Encountered \"RENAME\"");
-        throw new SkipException("Rename column is not yet supported by Phoenix connector");
-    }
-
-    @Override
-    public void testRenameColumnName(String columnName)
-    {
-        // The column name is rejected when creating a table
-        if (columnName.equals("a\"quote")) {
-            super.testRenameColumnName(columnName);
-            return;
+            testAddAndDropColumnName(columnName, requiresDelimiting(columnName));
         }
-        assertThatThrownBy(() -> super.testRenameColumnName(columnName))
-                // TODO (https://github.com/trinodb/trino/issues/7205) support column rename in Phoenix
-                .hasMessageContaining("Syntax error. Encountered \"RENAME\"");
-        throw new SkipException("Rename column is not yet supported by Phoenix connector");
     }
 
-    @Override
-    public void testAddAndDropColumnName(String columnName)
-    {
-        // TODO: Investigate why these two case fail
-        if (columnName.equals("an'apostrophe")) {
-            assertThatThrownBy(() -> super.testAddAndDropColumnName(columnName))
-                    .hasMessageContaining("Syntax error. Mismatched input");
-            throw new SkipException("TODO");
-        }
-        if (columnName.equals("a\\backslash`")) {
-            assertThatThrownBy(() -> super.testAddAndDropColumnName(columnName))
-                    .hasMessageContaining("Undefined column");
-            throw new SkipException("TODO");
-        }
-        super.testAddAndDropColumnName(columnName);
-    }
-
+    @Test
     @Override
     public void testInsertArray()
     {
@@ -293,10 +266,11 @@ public class TestPhoenixConnectorTest
                 .hasMessage("Phoenix JDBC driver replaced 'null' with '0.0' at index 1 in [0.0]");
     }
 
+    @Test
     @Override
     public void testCreateSchema()
     {
-        throw new SkipException("test disabled until issue fixed"); // TODO https://github.com/trinodb/trino/issues/2348
+        abort("test disabled until issue fixed"); // TODO https://github.com/trinodb/trino/issues/2348
     }
 
     @Override
@@ -331,6 +305,7 @@ public class TestPhoenixConnectorTest
         return Optional.of(dataMappingTestSetup);
     }
 
+    @Test
     @Override
     public void testShowCreateTable()
     {
@@ -354,13 +329,13 @@ public class TestPhoenixConnectorTest
                         ")");
     }
 
+    @Test
     @Override
     public void testCharVarcharComparison()
     {
         // test overridden because super uses all-space char values ('  ') that are null-out by Phoenix
 
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_char_varchar",
                 "(k, v) AS VALUES" +
                         "   (-1, CAST(NULL AS char(3))), " +
@@ -377,13 +352,13 @@ public class TestPhoenixConnectorTest
         }
     }
 
+    @Test
     @Override
     public void testVarcharCharComparison()
     {
         // test overridden because Phoenix nulls-out '' varchar value, impacting results
 
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_varchar_char",
                 "(k, v) AS VALUES" +
                         "   (-1, CAST(NULL AS varchar(3))), " +
@@ -407,15 +382,22 @@ public class TestPhoenixConnectorTest
         }
     }
 
+    @Test
     @Override
     public void testCharTrailingSpace()
     {
-        assertThatThrownBy(super::testCharTrailingSpace)
-                .hasMessageContaining("The table does not have a primary key. tableName=TPCH.CHAR_TRAILING_SPACE");
-        throw new SkipException("Implement test for Phoenix");
+        String schema = getSession().getSchema().orElseThrow();
+        try (TestTable table = new PhoenixTestTable(onRemoteDatabase(), schema + ".char_trailing_space", "(x char(10) primary key)", List.of("'test'"))) {
+            String tableName = table.getName();
+            assertQuery("SELECT * FROM " + tableName + " WHERE x = char 'test'", "VALUES 'test      '");
+            assertQuery("SELECT * FROM " + tableName + " WHERE x = char 'test  '", "VALUES 'test      '");
+            assertQuery("SELECT * FROM " + tableName + " WHERE x = char 'test        '", "VALUES 'test      '");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + tableName + " WHERE x = char ' test'");
+        }
     }
 
     // Overridden because Phoenix requires a ROWID column
+    @Test
     @Override
     public void testCountDistinctWithStringTypes()
     {
@@ -425,44 +407,11 @@ public class TestPhoenixConnectorTest
                 .collect(toImmutableList());
         String tableName = "count_distinct_strings" + randomNameSuffix();
 
-        try (TestTable testTable = new TestTable(getQueryRunner()::execute, tableName, "(id int, t_char CHAR(5), t_varchar VARCHAR(5)) WITH (ROWKEYS='id')", rows)) {
+        try (TestTable testTable = newTrinoTable(tableName, "(id int, t_char CHAR(5), t_varchar VARCHAR(5)) WITH (ROWKEYS='id')", rows)) {
             assertQuery("SELECT count(DISTINCT t_varchar) FROM " + testTable.getName(), "VALUES 6");
             assertQuery("SELECT count(DISTINCT t_char) FROM " + testTable.getName(), "VALUES 6");
             assertQuery("SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName(), "VALUES (6, 6)");
         }
-    }
-
-    @Override
-    public void testMergeLarge()
-    {
-        String tableName = "test_merge_" + randomNameSuffix();
-
-        assertUpdate(createTableForWrites(format("CREATE TABLE %s (orderkey BIGINT, custkey BIGINT, totalprice DOUBLE)", tableName)));
-
-        assertUpdate(
-                format("INSERT INTO %s SELECT orderkey, custkey, totalprice FROM tpch.sf1.orders", tableName),
-                (long) computeScalar("SELECT count(*) FROM tpch.sf1.orders"));
-
-        @Language("SQL") String mergeSql = "" +
-                "MERGE INTO " + tableName + " t USING (SELECT * FROM tpch.sf1.orders) s ON (t.orderkey = s.orderkey)\n" +
-                "WHEN MATCHED AND mod(s.orderkey, 3) = 0 THEN UPDATE SET totalprice = t.totalprice + s.totalprice\n" +
-                "WHEN MATCHED AND mod(s.orderkey, 3) = 1 THEN DELETE";
-
-        assertUpdate(mergeSql, 1_000_000);
-
-        // verify deleted rows
-        assertQuery("SELECT count(*) FROM " + tableName + " WHERE mod(orderkey, 3) = 1", "SELECT 0");
-
-        // verify untouched rows
-        assertThat(query("SELECT count(*), cast(sum(totalprice) AS decimal(18,2)) FROM " + tableName + " WHERE mod(orderkey, 3) = 2"))
-                .matches("SELECT count(*), cast(sum(totalprice) AS decimal(18,2)) FROM tpch.sf1.orders WHERE mod(orderkey, 3) = 2");
-
-        // TODO investigate why sum(DOUBLE) not correct
-        // verify updated rows
-        String sql = format("SELECT count(*) FROM %s t JOIN tpch.sf1.orders s ON t.orderkey = s.orderkey WHERE mod(t.orderkey, 3) = 0 AND t.totalprice != s.totalprice * 2", tableName);
-        assertQuery(sql, "SELECT 0");
-
-        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -481,7 +430,7 @@ public class TestPhoenixConnectorTest
         String targetTable = "merge_multiple_rowkeys_specified_" + randomNameSuffix();
         // check the upper case table name also works
         targetTable = targetTable.toUpperCase(ENGLISH);
-        assertUpdate(createTableForWrites(format("CREATE TABLE %s (customer VARCHAR, purchases INT, zipcode INT, spouse VARCHAR, address VARCHAR, customer_copy VARCHAR) WITH (rowkeys = '%s')", targetTable, rowkeyDefinition)));
+        createTableForWrites("CREATE TABLE %s (customer VARCHAR, purchases INT, zipcode INT, spouse VARCHAR, address VARCHAR, customer_copy VARCHAR) WITH (rowkeys = '" + rowkeyDefinition + "')", targetTable, Optional.empty(), OptionalInt.empty());
 
         String originalInsertFirstHalf = IntStream.range(1, targetCustomerCount / 2)
                 .mapToObj(intValue -> format("('joe_%s', %s, %s, 'jan_%s', '%s Poe Ct', 'joe_%s')", intValue, 1000, 91000, intValue, intValue, intValue))
@@ -538,12 +487,6 @@ public class TestPhoenixConnectorTest
                 format("VALUES %s, %s, %s", updatedBeginning, updatedMiddle, updatedEnd));
 
         assertUpdate("DROP TABLE " + targetTable);
-    }
-
-    @Override
-    public void testUpdateRowConcurrently()
-    {
-        throw new SkipException("Phoenix doesn't support concurrent update of different columns in a row");
     }
 
     @Test
@@ -607,7 +550,7 @@ public class TestPhoenixConnectorTest
     public void testCreateTableWithProperties()
     {
         assertUpdate("CREATE TABLE test_create_table_with_properties (created_date date, a bigint, b double, c varchar(10), d varchar(10)) WITH(rowkeys = 'created_date row_timestamp, a,b,c', salt_buckets=10)");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_create_table_with_properties"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_create_table_with_properties")).isTrue();
         assertTableColumnNames("test_create_table_with_properties", "created_date", "a", "b", "c", "d");
         assertThat(computeActual("SHOW CREATE TABLE test_create_table_with_properties").getOnlyValue())
                 .isEqualTo("CREATE TABLE phoenix.tpch.test_create_table_with_properties (\n" +
@@ -631,7 +574,7 @@ public class TestPhoenixConnectorTest
     public void testCreateTableWithPresplits()
     {
         assertUpdate("CREATE TABLE test_create_table_with_presplits (rid varchar(10), val1 varchar(10)) with(rowkeys = 'rid', SPLIT_ON='\"1\",\"2\",\"3\"')");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_create_table_with_presplits"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_create_table_with_presplits")).isTrue();
         assertTableColumnNames("test_create_table_with_presplits", "rid", "val1");
         assertUpdate("DROP TABLE test_create_table_with_presplits");
     }
@@ -665,10 +608,11 @@ public class TestPhoenixConnectorTest
         assertQuery("SELECT * FROM test_col_insert", "SELECT 1, 'val1', 'val2'");
     }
 
+    @Test
     @Override
     public void testTopNPushdown()
     {
-        throw new SkipException("Phoenix does not support topN push down, but instead replaces partial topN with partial Limit.");
+        abort("Phoenix does not support topN push down, but instead replaces partial topN with partial Limit.");
     }
 
     @Test
@@ -787,7 +731,7 @@ public class TestPhoenixConnectorTest
     @Override
     protected TestTable createTableWithDoubleAndRealColumns(String name, List<String> rows)
     {
-        return new TestTable(onRemoteDatabase(), name, "(t_double double primary key, u_double double, v_real float, w_real float)", rows);
+        return new PhoenixTestTable(onRemoteDatabase(), name, "(t_double double primary key, u_double double, v_real float, w_real float)", rows);
     }
 
     @Override
@@ -797,34 +741,38 @@ public class TestPhoenixConnectorTest
                 .hasMessageContaining("Concurrent modification to table");
     }
 
+    @Test
     @Override
     public void testCreateSchemaWithLongName()
     {
         // TODO: Find the maximum table schema length in Phoenix and enable this test.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
+    @Test
     @Override
     public void testCreateTableWithLongTableName()
     {
         // TODO: Find the maximum table name length in Phoenix and enable this test.
         // Table name length with 65536 chars throws "startRow's length must be less than or equal to 32767 to meet the criteria for a row key."
         // 32767 chars still causes the same error and shorter names (e.g. 10000) causes timeout.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
+    @Test
     @Override
     public void testCreateTableWithLongColumnName()
     {
         // TODO: Find the maximum column name length in Phoenix and enable this test.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
+    @Test
     @Override
     public void testAlterTableAddLongColumnName()
     {
         // TODO: Find the maximum column name length in Phoenix and enable this test.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
     @Test
@@ -835,6 +783,313 @@ public class TestPhoenixConnectorTest
         assertQuery(
                 "SHOW SESSION LIKE '" + propertyName + "'",
                 "VALUES('" + propertyName + "','5000', '5000', 'integer', 'Maximum ranges to allow in a tuple domain without simplifying it')");
+    }
+
+    @Test
+    @Override // Override because Phoenix doesn't follow SQL standard syntax
+    public void testExecuteProcedure()
+    {
+        String tableName = "test_execute" + randomNameSuffix();
+        String schemaTableName = getSession().getSchema().orElseThrow() + "." + tableName;
+
+        assertUpdate("CREATE TABLE " + schemaTableName + "(a int) WITH (rowkeys = 'a')");
+        try {
+            assertUpdate("CALL system.execute('UPSERT INTO " + schemaTableName + " VALUES (1)')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES 1");
+
+            assertUpdate("CALL system.execute('DELETE FROM " + schemaTableName + "')");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + schemaTableName);
+
+            assertUpdate("CALL system.execute('DROP TABLE " + schemaTableName + "')");
+            assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + schemaTableName);
+        }
+    }
+
+    @Test
+    public void testMergeUpdatePartial()
+            throws IOException
+    {
+        String targetTableName = "test_merge_update_partial_target" + randomNameSuffix();
+        String schema = getSession().getSchema().orElseThrow();
+        onRemoteDatabase().execute("CREATE TABLE " + schema + "." + targetTableName + " (pk varchar primary key , col_a bigint, col_b bigint, col_c bigint)");
+        onRemoteDatabase().execute("UPSERT INTO " + schema + "." + targetTableName + " VALUES ('p1', 2, 3, 4)");
+        onRemoteDatabase().execute("UPSERT INTO " + schema + "." + targetTableName + " VALUES ('p2', 3, 5, 7)");
+        onRemoteDatabase().execute("UPSERT INTO " + schema + "." + targetTableName + " VALUES ('p3', 4, 6, 7)");
+        onRemoteDatabase().execute("UPSERT INTO " + schema + "." + targetTableName + " VALUES ('p4', 5, 8, 7)");
+        assertQuery("SELECT * FROM " + targetTableName, "VALUES ('p1', 2, 3, 4), ('p2', 3, 5, 7), ('p3', 4, 6, 7), ('p4', 5, 8, 7)");
+
+        try (org.apache.hadoop.hbase.client.Connection connection = testingPhoenixServer.getConnection()) {
+            // record pk=p1,p2 all column modified times
+            List<Long> p1ModifiedTimesBefore = new ArrayList<>();
+            List<Long> p2ModifiedTimesBefore = new ArrayList<>();
+            for (String column : List.of("col_a", "col_b", "col_c")) {
+                p1ModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, targetTableName, column, "p1"));
+                p2ModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, targetTableName, column, "p2"));
+            }
+
+            // update single column in sing row, pk=p1
+            assertUpdate(format("MERGE INTO %s t USING (VALUES ('p1', 3, 4, 5)) AS s(pk, a, b, c) " +
+                    "   ON t.pk = s.pk " +
+                    "   WHEN MATCHED THEN UPDATE SET col_a = s.a " +
+                    "   WHEN NOT MATCHED THEN INSERT (pk, col_a, col_b, col_c) VALUES (t.pk, s.a, s.b, s.c)", targetTableName), 1);
+
+            List<Long> p1ModifiedTimesAfter = new ArrayList<>();
+            List<Long> p2ModifiedTimesAfter = new ArrayList<>();
+            for (String column : List.of("col_a", "col_b", "col_c")) {
+                p1ModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, targetTableName, column, "p1"));
+                p2ModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, targetTableName, column, "p2"));
+            }
+            // pk=p1 col_a is updated
+            assertThat(p1ModifiedTimesAfter.get(0)).isGreaterThan(p1ModifiedTimesBefore.get(0));
+            // pk=p2,p3 col_a is not updated
+            assertThat(p1ModifiedTimesAfter.get(1)).isEqualTo(p1ModifiedTimesBefore.get(1));
+            assertThat(p1ModifiedTimesAfter.get(2)).isEqualTo(p1ModifiedTimesBefore.get(2));
+            // col_b values are not updated
+            assertThat(p2ModifiedTimesAfter).isEqualTo(p2ModifiedTimesBefore);
+
+            // record col_a, col_b modified times
+            List<Long> colAModifiedTimesBefore = new ArrayList<>();
+            List<Long> colBModifiedTimesBefore = new ArrayList<>();
+            for (String pk : List.of("p1", "p2", "p3", "p4")) {
+                colAModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, targetTableName, "col_a", pk));
+                colBModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, targetTableName, "col_b", pk));
+            }
+
+            assertQuery("SELECT * FROM " + targetTableName, "VALUES ('p1', 3, 3, 4), ('p2', 3, 5, 7), ('p3', 4, 6, 7), ('p4', 5, 8, 7)");
+
+            // update single column(col_a) in multi rows
+            assertUpdate(format("MERGE INTO %s t USING (VALUES ('p1', 3, 4, 5), ('p2', 4, 4, 4), ('p3', 5, 5, 5)) AS s(pk, a, b, c) " +
+                    "   ON t.pk = s.pk " +
+                    "   WHEN MATCHED AND t.col_a = 4 THEN UPDATE SET col_a = s.a " + // pk=p3
+                    "   WHEN MATCHED THEN UPDATE SET col_a = s.a + 100 " + // pk=p1, p2
+                    "   WHEN NOT MATCHED THEN INSERT (pk, col_a, col_b, col_c) VALUES (t.pk, s.a, s.b, s.c)", targetTableName), 3);
+
+            List<Long> colAModifiedTimesAfter = new ArrayList<>();
+            List<Long> colBModifiedTimesAfter = new ArrayList<>();
+            for (String pk : List.of("p1", "p2", "p3", "p4")) {
+                colAModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, targetTableName, "col_a", pk));
+                colBModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, targetTableName, "col_b", pk));
+            }
+
+            // pk=p1,p2,p3 col_a are all modified
+            assertThat(colAModifiedTimesAfter.get(0)).isGreaterThan(colAModifiedTimesBefore.get(0));
+            assertThat(colAModifiedTimesAfter.get(1)).isGreaterThan(colAModifiedTimesBefore.get(1));
+            assertThat(colAModifiedTimesAfter.get(2)).isGreaterThan(colAModifiedTimesBefore.get(2));
+            // pk=p4 col_a is not modified
+            assertThat(colAModifiedTimesAfter.get(3)).isEqualTo(colAModifiedTimesBefore.get(3));
+            // col_b is not modified
+            assertThat(colBModifiedTimesAfter).isEqualTo(colBModifiedTimesBefore);
+
+            assertQuery("SELECT * FROM " + targetTableName, "VALUES ('p1', 103, 3, 4), ('p2', 104, 5, 7), ('p3', 5, 6, 7), ('p4', 5, 8, 7)");
+
+            // using source table to test non-overlapping sets columns update
+            String sourceTableName = "test_merge_update_partial_source" + randomNameSuffix();
+            onRemoteDatabase().execute("CREATE TABLE " + schema + "." + sourceTableName + " (pk varchar primary key , col_a bigint, col_b bigint, col_c bigint)");
+            onRemoteDatabase().execute("UPSERT INTO " + schema + "." + sourceTableName + " VALUES ('p1', 1, 1, 1)");
+            onRemoteDatabase().execute("UPSERT INTO " + schema + "." + sourceTableName + " VALUES ('p2', 2, 2, 2)");
+            onRemoteDatabase().execute("UPSERT INTO " + schema + "." + sourceTableName + " VALUES ('p3', 3, 3, 3)");
+            onRemoteDatabase().execute("UPSERT INTO " + schema + "." + sourceTableName + " VALUES ('p4', 4, 4, 4)");
+            onRemoteDatabase().execute("UPSERT INTO " + schema + "." + sourceTableName + " VALUES ('p5', 5, 5, 5)");
+            assertQuery("SELECT * FROM " + sourceTableName, "VALUES ('p1', 1, 1, 1), ('p2', 2, 2, 2), ('p3', 3, 3, 3), ('p4', 4, 4, 4), ('p5', 5, 5, 5)");
+
+            // update multi rows with non-overlapping columns, with delete and insert cases
+            // update cell is (p2, col_a), (p3, col_c), (p4, col_c)
+
+            // record before time that will be updated
+            long p2ColAModifiedTimeBefore = readLatestColumnVersion(connection, schema, targetTableName, "col_a", "p2");
+            long p3ColCModifiedTimeBefore = readLatestColumnVersion(connection, schema, targetTableName, "col_c", "p3");
+            long p4ColCModifiedTimeBefore = readLatestColumnVersion(connection, schema, targetTableName, "col_c", "p4");
+            // record before time that will not be updated
+            long p2ColBModifiedTimeBefore = readLatestColumnVersion(connection, schema, targetTableName, "col_b", "p2");
+            long p2ColCModifiedTimeBefore = readLatestColumnVersion(connection, schema, targetTableName, "col_c", "p2");
+            long p3ColAModifiedTimeBefore = readLatestColumnVersion(connection, schema, targetTableName, "col_a", "p3");
+            long p3ColBModifiedTimeBefore = readLatestColumnVersion(connection, schema, targetTableName, "col_b", "p3");
+
+            assertUpdate(format("MERGE INTO %s t USING %s s " +
+                    "   ON t.pk = s.pk " +
+                    "   WHEN MATCHED AND mod(t.col_a, 2) = 0 THEN UPDATE SET col_a = s.col_a + 1 " + // pk=p2
+                    "   WHEN MATCHED AND t.col_a > 100 THEN DELETE " + // pk=p1
+                    "   WHEN MATCHED THEN UPDATE SET col_c = t.col_c + s.col_c " + // pk=p3, p4
+                    "   WHEN NOT MATCHED THEN INSERT (pk, col_a, col_b, col_c) VALUES (s.pk, s.col_a, s.col_b, s.col_c)", targetTableName, sourceTableName), 5);
+
+            // check updated cell (p2, col_a), (p3, col_c), (p4, col_c)
+            assertThat(readLatestColumnVersion(connection, schema, targetTableName, "col_a", "p2")).isGreaterThan(p2ColAModifiedTimeBefore);
+            assertThat(readLatestColumnVersion(connection, schema, targetTableName, "col_c", "p3")).isGreaterThan(p3ColCModifiedTimeBefore);
+            assertThat(readLatestColumnVersion(connection, schema, targetTableName, "col_c", "p4")).isGreaterThan(p4ColCModifiedTimeBefore);
+
+            // check not updated cell (p2, col_b), (p2, col_c), (p3, col_a), (p3, col_b)
+            assertThat(readLatestColumnVersion(connection, schema, targetTableName, "col_b", "p2")).isEqualTo(p2ColBModifiedTimeBefore);
+            assertThat(readLatestColumnVersion(connection, schema, targetTableName, "col_c", "p2")).isEqualTo(p2ColCModifiedTimeBefore);
+            assertThat(readLatestColumnVersion(connection, schema, targetTableName, "col_a", "p3")).isEqualTo(p3ColAModifiedTimeBefore);
+            assertThat(readLatestColumnVersion(connection, schema, targetTableName, "col_b", "p3")).isEqualTo(p3ColBModifiedTimeBefore);
+
+            assertQuery("SELECT * FROM " + targetTableName, "VALUES ('p2', 3, 5, 7), ('p3', 5, 6, 10), ('p4', 5, 8, 11), ('p5', 5, 5, 5)");
+
+            assertUpdate("DROP TABLE " + sourceTableName);
+        }
+
+        assertUpdate("DROP TABLE " + targetTableName);
+    }
+
+    @Test
+    public void testUpdatePartial()
+            throws IOException
+    {
+        String tableName = "test_update_partial" + randomNameSuffix();
+        String schema = getSession().getSchema().orElseThrow();
+        onRemoteDatabase().execute("CREATE TABLE " + schema + "." + tableName + " (pk varchar primary key , col_a bigint, col_b bigint, col_c bigint)");
+        onRemoteDatabase().execute("UPSERT INTO " + schema + "." + tableName + " VALUES ('p1', 2, 3, 4)");
+        onRemoteDatabase().execute("UPSERT INTO " + schema + "." + tableName + " VALUES ('p2', 3, 5, 7)");
+        onRemoteDatabase().execute("UPSERT INTO " + schema + "." + tableName + " VALUES ('p3', 4, 6, 7)");
+        onRemoteDatabase().execute("UPSERT INTO " + schema + "." + tableName + " VALUES ('p4', 5, 8, 7)");
+        assertQuery("SELECT * FROM " + tableName, "VALUES ('p1', 2, 3, 4), ('p2', 3, 5, 7), ('p3', 4, 6, 7), ('p4', 5, 8, 7)");
+        try (org.apache.hadoop.hbase.client.Connection connection = testingPhoenixServer.getConnection()) {
+            // update single column single row
+
+            // nothing changed
+            long colAP1ModifiedTimeBefore = readLatestColumnVersion(connection, schema, tableName, "col_a", "p1");
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_a", "p1")).isEqualTo(colAP1ModifiedTimeBefore);
+
+            long colBP1ModifiedTimeBefore = readLatestColumnVersion(connection, schema, tableName, "col_b", "p1");
+            long colCP1ModifiedTimeBefore = readLatestColumnVersion(connection, schema, tableName, "col_c", "p1");
+
+            // record p2 each column modified time
+            List<Long> p2ModifiedTimesBefore = new ArrayList<>();
+            p2ModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, tableName, "col_a", "p2"));
+            p2ModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, tableName, "col_b", "p2"));
+            p2ModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, tableName, "col_c", "p2"));
+
+            // update col_a pk=p1
+            assertUpdate("UPDATE " + tableName + " SET col_a = -1 WHERE pk = 'p1'", 1);
+
+            // row with pk=p1 only col_a is updated
+            long colAP1ModifiedTimeAfter = readLatestColumnVersion(connection, schema, tableName, "col_a", "p1");
+            assertThat(colAP1ModifiedTimeAfter).isGreaterThan(colAP1ModifiedTimeBefore);
+
+            // row with pk=p1 col_a and col_b are not updated
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_b", "p1")).isEqualTo(colBP1ModifiedTimeBefore);
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_c", "p1")).isEqualTo(colCP1ModifiedTimeBefore);
+
+            // row with pk=p2 nothing changed
+            List<Long> p2ModifiedTimesAfter = new ArrayList<>();
+            p2ModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, tableName, "col_a", "p2"));
+            p2ModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, tableName, "col_b", "p2"));
+            p2ModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, tableName, "col_c", "p2"));
+            assertThat(p2ModifiedTimesBefore).isEqualTo(p2ModifiedTimesAfter);
+
+            assertQuery("SELECT * FROM " + tableName, "VALUES ('p1', -1, 3, 4), ('p2', 3, 5, 7), ('p3', 4, 6, 7), ('p4', 5, 8, 7)");
+
+            // update single column in multi rows
+            List<Long> colAModifiedTimesBefore = new ArrayList<>();
+            List<Long> colBModifiedTimesBefore = new ArrayList<>();
+            List<Long> colCModifiedTimesBefore = new ArrayList<>();
+            for (String pk : List.of("p1", "p2", "p3", "p4")) {
+                colAModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, tableName, "col_a", pk));
+                colBModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, tableName, "col_b", pk));
+                colCModifiedTimesBefore.add(readLatestColumnVersion(connection, schema, tableName, "col_c", pk));
+            }
+            // update all col_b
+            assertUpdate("UPDATE " + tableName + " SET col_b = col_b + col_c WHERE pk IS NOT NULL AND col_b > 0", 4);
+            List<Long> colAModifiedTimesAfter = new ArrayList<>();
+            List<Long> colBModifiedTimesAfter = new ArrayList<>();
+            List<Long> colCModifiedTimesAfter = new ArrayList<>();
+            for (String pk : List.of("p1", "p2", "p3", "p4")) {
+                colAModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, tableName, "col_a", pk));
+                colBModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, tableName, "col_b", pk));
+                colCModifiedTimesAfter.add(readLatestColumnVersion(connection, schema, tableName, "col_c", pk));
+            }
+            // col_a and col_c are not updated
+            assertThat(colAModifiedTimesAfter).isEqualTo(colAModifiedTimesBefore);
+            assertThat(colCModifiedTimesAfter).isEqualTo(colCModifiedTimesBefore);
+            // col_b all is updated
+            assertThat(colBModifiedTimesAfter).hasSameSizeAs(colBModifiedTimesBefore);
+            for (int i = 0; i < colBModifiedTimesAfter.size(); i++) {
+                assertThat(colBModifiedTimesAfter.get(i)).isGreaterThan(colBModifiedTimesBefore.get(i));
+            }
+
+            assertQuery("SELECT * FROM " + tableName, "VALUES ('p1', -1, 7, 4), ('p2', 3, 12, 7), ('p3', 4, 13, 7), ('p4', 5, 15, 7)");
+
+            // multi rows and multi columns update
+
+            // update the col_a, col_c, pk=p3,p4
+            assertUpdate("UPDATE " + tableName + " SET col_a = 0, col_c = col_c + 1 WHERE pk IS NOT NULL AND col_a > 0 AND col_b != 12", 2);
+
+            // col_a pk=p1,p2 not change, pk=p3,p4 updated
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_a", "p1")).isEqualTo(colAModifiedTimesAfter.get(0));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_a", "p2")).isEqualTo(colAModifiedTimesAfter.get(1));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_a", "p3")).isGreaterThan(colAModifiedTimesAfter.get(2));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_a", "p4")).isGreaterThan(colAModifiedTimesAfter.get(3));
+
+            // col_b no changes
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_b", "p1")).isEqualTo(colBModifiedTimesAfter.get(0));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_b", "p2")).isEqualTo(colBModifiedTimesAfter.get(1));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_b", "p3")).isEqualTo(colBModifiedTimesAfter.get(2));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_b", "p4")).isEqualTo(colBModifiedTimesAfter.get(3));
+
+            // col_c is the same as col_a. pk=p1,p2 are not updated, pk=p3,p4 are updated
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_c", "p1")).isEqualTo(colCModifiedTimesAfter.get(0));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_c", "p2")).isEqualTo(colCModifiedTimesAfter.get(1));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_c", "p3")).isGreaterThan(colCModifiedTimesAfter.get(2));
+            assertThat(readLatestColumnVersion(connection, schema, tableName, "col_c", "p4")).isGreaterThan(colCModifiedTimesAfter.get(3));
+
+            assertQuery("SELECT * FROM " + tableName, "VALUES ('p1', -1, 7, 4), ('p2', 3, 12, 7), ('p3', 0, 13, 8), ('p4', 0, 15, 8)");
+        }
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    @Override
+    public void testMergeTargetWithoutPrimaryKeys()
+    {
+        abort("Phoenix table always has primary key");
+    }
+
+    private byte[] getActualQualifier(String tableName, String columnName)
+    {
+        String query = "SELECT COLUMN_QUALIFIER FROM SYSTEM.CATALOG WHERE TABLE_NAME = ? AND COLUMN_NAME = ?";
+        try (Connection connection = DriverManager.getConnection(testingPhoenixServer.getJdbcUrl());
+                PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setString(1, tableName);
+            statement.setString(2, columnName);
+            ResultSet rs = statement.executeQuery();
+            if (rs.next()) {
+                return rs.getBytes("COLUMN_QUALIFIER");
+            }
+            throw new RuntimeException("Failed to get actual qualifier");
+        }
+        catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private long readLatestColumnVersion(org.apache.hadoop.hbase.client.Connection connection, String schema, String tableName, String columnName, String rowkeyValue)
+            throws IOException
+    {
+        tableName = tableName.toUpperCase(ENGLISH);
+        columnName = columnName.toUpperCase(ENGLISH);
+        schema = schema.toUpperCase(ENGLISH);
+
+        TableName name = TableName.valueOf(schema, tableName);
+        Table table = connection.getTable(name);
+
+        byte[] rowKey = Bytes.toBytes(rowkeyValue);
+        byte[] columnFamily = Bytes.toBytes("0");
+        byte[] column = getActualQualifier(tableName, columnName);
+
+        Get getVersion = new Get(rowKey);
+        getVersion.addColumn(columnFamily, column);
+        // only read the latest version
+        getVersion.readVersions(1);
+
+        Result result = table.get(getVersion);
+        Cell[] cells = result.rawCells();
+        assertThat(cells).hasSize(1);
+        table.close();
+        return cells[0].getTimestamp();
     }
 
     @Override
